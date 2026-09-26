@@ -64,6 +64,48 @@ def model_tokens(product_name: str):
         out.append(token)
     return out
 
+
+def iphone_model_signature(text: str):
+    """
+    Chỉ đọc biến thể nằm ngay sau số đời iPhone để không nhầm chữ Pro trong tên linh kiện.
+    Ví dụ:
+    iPhone 16 -> ("16", "base")
+    iPhone 16 Pro -> ("16", "pro")
+    iPhone 16 Pro Max -> ("16", "pro max")
+    """
+    nt = normalize_text(text)
+    m = re.search(r"\biphone\s+(\d+)(?:\s+(pro)(?:\s+(max))?|\s+(plus)|\s+(mini)|\s+(se))?", nt)
+    if not m:
+        return None
+
+    number = m.group(1)
+    if m.group(2) and m.group(3):
+        variant = "pro max"
+    elif m.group(2):
+        variant = "pro"
+    elif m.group(4):
+        variant = "plus"
+    elif m.group(5):
+        variant = "mini"
+    elif m.group(6):
+        variant = "se"
+    else:
+        variant = "base"
+
+    return (number, variant)
+
+def housing_model_matches(candidate_text: str, product_name: str):
+    target = iphone_model_signature(product_name)
+    candidate = iphone_model_signature(candidate_text)
+
+    # Với iPhone, chỉ chấp nhận khi xác định được chính xác đời + biến thể.
+    if target:
+        return candidate is not None and candidate == target
+
+    # Các hãng khác giữ logic cũ.
+    words = set(normalize_text(candidate_text).split())
+    return all(token in words for token in model_tokens(product_name))
+
 def money_values(text: str):
     raw = re.findall(r"(?<!\d)(\d{1,3}(?:[\.\,]\d{3})+)\s*₫", text)
     vals = []
@@ -425,8 +467,15 @@ def fetch_repair_type(product_name: str, key: str):
             continue
         nt = normalize_text(text)
         words = set(nt.split())
-        if not all(token in words for token in model):
-            continue
+
+        if key == "housing":
+            # Riêng VỎ phải khớp chính xác biến thể model.
+            if not housing_model_matches(text, product_name):
+                continue
+        else:
+            if not all(token in words for token in model):
+                continue
+
         if any(normalize_text(req) not in nt for req in cfg["required"]):
             continue
         prices = money_values(text)
