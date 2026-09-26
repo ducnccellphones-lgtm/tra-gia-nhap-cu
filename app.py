@@ -34,8 +34,8 @@ REPAIR_TYPES = [
     {"key":"touch","label":"Kính cảm ứng","url":"/thay-kinh-cam-ung","support_rate":0.15,"max_support":500000,"required":[]},
     {"key":"housing","label":"Vỏ","url":"/thay-vo","support_rate":0.0,"max_support":None,"required":[]},
     {"key":"back_glass","label":"Kính lưng","url":"/thay-kinh-lung","support_rate":0.30,"max_support":None,"required":[]},
-    {"key":"camera_front","label":"Camera trước","url":"/thay-camera-dien-thoai","support_rate":0.30,"max_support":None,"required":["camera truoc"]},
-    {"key":"camera_back","label":"Camera sau","url":"/thay-camera-dien-thoai","support_rate":0.30,"max_support":None,"required":["camera sau"]},
+    {"key":"camera_front","label":"Camera trước","url":"/thay-camera-truoc","support_rate":0.30,"max_support":None,"required":["camera truoc"]},
+    {"key":"camera_back","label":"Camera sau","url":"/thay-camera-sau","support_rate":0.30,"max_support":None,"required":["camera sau"]},
     {"key":"speaker_out","label":"Loa ngoài","url":"/thay-loa-ngoai","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"speaker_in","label":"Loa trong","url":"/thay-loa-trong","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"charging","label":"Chân sạc / cáp sạc","url":"/thay-cap-sac","support_rate":0.30,"max_support":None,"required":[]},
@@ -559,8 +559,8 @@ def fetch_repair_type(product_name: str, key: str):
         nt = normalize_text(text)
         words = set(nt.split())
 
-        if key == "housing":
-            # Riêng VỎ phải khớp chính xác biến thể model.
+        if key in ("housing", "camera_front", "camera_back"):
+            # Riêng VỎ và CAMERA phải khớp chính xác biến thể model.
             if not housing_model_matches(text, product_name):
                 continue
         else:
