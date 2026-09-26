@@ -34,7 +34,7 @@ REPAIR_TYPES = [
     {"key":"touch","label":"Kính cảm ứng","url":"/thay-kinh-cam-ung","support_rate":0.15,"max_support":500000,"required":[]},
     {"key":"housing","label":"Vỏ","url":"/thay-vo","support_rate":0.0,"max_support":None,"required":[]},
     {"key":"back_glass","label":"Kính lưng","url":"/thay-kinh-lung","support_rate":0.30,"max_support":None,"required":[]},
-    {"key":"camera_front","label":"Camera truoc","url":"/thay-camera-dien-thoai","support_rate":0.30,"max_support":None,"required":["camera truoc"]},
+    {"key":"camera_front","label":"Camera trước","url":"/thay-camera-dien-thoai","support_rate":0.30,"max_support":None,"required":["camera truoc"]},
     {"key":"camera_back","label":"Camera sau","url":"/thay-camera-dien-thoai","support_rate":0.30,"max_support":None,"required":["camera sau"]},
     {"key":"speaker_out","label":"Loa ngoài","url":"/thay-loa-ngoai","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"speaker_in","label":"Loa trong","url":"/thay-loa-trong","support_rate":0.30,"max_support":None,"required":[]},
