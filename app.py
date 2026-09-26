@@ -248,6 +248,117 @@ def fetch_dtv_api_price_from_page(url: str):
     except Exception:
         return None
 
+def fetch_dtv_api_price_by_page_sku(url: str):
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"},
+            timeout=12,
+            allow_redirects=True,
+        )
+        if r.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        page_text = " ".join(soup.stripped_strings)
+        sku_match = re.search(r"\b\d+(?:\.\d+){4}\b", page_text)
+        if not sku_match:
+            return None
+        page_sku = sku_match.group(0)
+
+        raw = r.text
+        sku_pos = raw.find(page_sku)
+        zones = []
+        if sku_pos >= 0:
+            zones.append(raw[max(0, sku_pos - 25000):sku_pos + 25000])
+        zones.append(raw)
+
+        ids = []
+        patterns = [
+            r'"product_id"\s*:\s*"?([0-9]{4,})"?',
+            r'\\?"product_id\\?"\s*:\s*\\?"?([0-9]{4,})',
+            r'"productId"\s*:\s*"?([0-9]{4,})"?',
+            r'data-product-id=["\']([0-9]{4,})["\']',
+        ]
+        for zone in zones:
+            for pattern in patterns:
+                for pid in re.findall(pattern, zone, re.IGNORECASE):
+                    if pid not in ids:
+                        ids.append(pid)
+            if ids:
+                break
+
+        if not ids:
+            return None
+
+        id_list = ",".join(f'"{pid}"' for pid in ids[:40])
+        query = f"""
+        {{
+          products(
+            filter: {{
+              static: {{
+                province_id: 24,
+                product_id: [{id_list}],
+                is_out_of_business: false,
+                price: {{from: 1}}
+              }}
+            }}
+            page: 1
+            size: 50
+          ) {{
+            data {{
+              general {{
+                product_id
+                parent_id
+                child_product
+                name
+                url_path
+                sku
+              }}
+              filterable {{
+                stock
+                price
+                special_price
+                views
+              }}
+            }}
+          }}
+        }}
+        """
+
+        raw_api = dtv_graphql(query)
+        data = (((raw_api.get("data") or {}).get("products") or {}).get("data") or [])
+        if not data:
+            return None
+
+        exact = None
+        for item in data:
+            general = item.get("general") or {}
+            if str(general.get("sku") or "").strip() == page_sku:
+                exact = item
+                break
+        if not exact:
+            return None
+
+        f = exact.get("filterable") or {}
+        special = int(f.get("special_price") or 0)
+        normal = int(f.get("price") or 0)
+        price = special if special > 0 else normal
+        if price <= 0:
+            return None
+
+        general = exact.get("general") or {}
+        return {
+            "price": price,
+            "product_id": general.get("product_id"),
+            "name": general.get("name"),
+            "url_path": general.get("url_path"),
+            "sku": general.get("sku"),
+            "page_url": r.url,
+        }
+    except Exception:
+        return None
+
 def product_slug(product_name: str):
     text = normalize_text(product_name)
     text = re.sub(r"\b(apple|samsung|xiaomi|oppo|vivo|realme|honor|huawei)\b", "", text)
@@ -450,7 +561,9 @@ def fetch_camera_direct(product_name: str, cfg, key: str):
             if required_phrase not in title_nt:
                 continue
 
-            api_item = fetch_dtv_api_price_from_page(r.url)
+            api_item = fetch_dtv_api_price_by_page_sku(r.url)
+            if not api_item:
+                api_item = fetch_dtv_api_price_from_page(r.url)
             if api_item and api_item.get("price"):
                 api_text = normalize_text((api_item.get("name") or "") + " " + (api_item.get("url_path") or ""))
                 if housing_model_matches(api_text or title_text, product_name) and required_phrase in api_text:
