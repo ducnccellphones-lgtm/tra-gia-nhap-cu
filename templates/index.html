@@ -49,9 +49,25 @@
       <div class="eyebrow conditions-title">CHỌN TÌNH TRẠNG MÁY</div>
       <div id="conditionList" class="conditions"></div>
 
+      <div class="repair-block">
+        <div class="repair-head">
+          <div>
+            <div class="eyebrow">TÌNH TRẠNG LINH KIỆN</div>
+            <div class="repair-sub">Tick "Có lỗi" để tự động trừ phí sửa chữa tham chiếu Điện Thoại Vui - Hà Nội.</div>
+          </div>
+          <div id="repairStatus" class="repair-status">Chưa tải giá sửa</div>
+        </div>
+        <div id="repairList" class="repair-list"></div>
+      </div>
+
+      <div class="summary-box">
+        <div class="summary-row"><span>Giá máy theo loại</span><b id="baseTradePrice">0đ</b></div>
+        <div class="summary-row negative"><span>Tổng phí linh kiện lỗi</span><b id="repairDeduction">-0đ</b></div>
+      </div>
+
       <div class="price-panel">
         <div>
-          <div class="price-label">GIÁ THU DỰ KIẾN</div>
+          <div class="price-label">GIÁ NHẬP CUỐI</div>
           <div id="finalPrice" class="final-price">0đ</div>
         </div>
         <button id="copyBtn" class="copy-btn">Copy giá</button>
