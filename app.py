@@ -167,14 +167,48 @@ def fetch_screen_direct(product_name: str, cfg):
     if "gena" not in nt or "loai pro" not in nt:
         return None
 
-    match = re.search(r"GENA\s+loại\s+pro\s*([0-9\.\,]+)\s*₫", page_text, re.IGNORECASE)
-    if not match:
-        match = re.search(r"([0-9\.\,]+)\s*₫", page_text)
-    if not match:
-        return None
+    price = None
 
-    price = int(re.sub(r"[^0-9]", "", match.group(1)))
-    if price < 100000:
+    # 1) Giá hiển thị trực tiếp cạnh GENA loại Pro.
+    match = re.search(r"GENA\s+loại\s+pro[^0-9]{0,80}([0-9\.\,]+)\s*₫", page_text, re.IGNORECASE)
+    if match:
+        price = int(re.sub(r"[^0-9]", "", match.group(1)))
+
+    # 2) Một số trang render giá bằng JavaScript: tìm trường giá trong dữ liệu gần GENA loại Pro.
+    if not price:
+        raw_flat = re.sub(r"\s+", " ", r.text)
+        for m in re.finditer(r"GENA.{0,40}loại.{0,20}pro", raw_flat, re.IGNORECASE):
+            window = raw_flat[max(0, m.start() - 2000):m.start() + 2000]
+            pm = re.search(r'(?:"(?:final_price|special_price|price|finalPrice|salePrice)"|(?:final_price|special_price|price|finalPrice|salePrice))\s*[:=]\s*["\']?([0-9]{6,9})', window, re.IGNORECASE)
+            if pm:
+                candidate = int(pm.group(1))
+                if 300000 <= candidate <= 30000000:
+                    price = candidate
+                    break
+
+    # 3) Tìm theo mã SKU của chính trang sản phẩm.
+    if not price:
+        sku_match = re.search(r"\b\d+\.\d+\.\d+\.\d+\.\d+\b", page_text)
+        if sku_match:
+            raw_flat = re.sub(r"\s+", " ", r.text)
+            sku_pos = raw_flat.find(sku_match.group(0))
+            if sku_pos >= 0:
+                window = raw_flat[max(0, sku_pos - 2500):sku_pos + 2500]
+                pm = re.search(r'(?:"(?:final_price|special_price|price|finalPrice|salePrice)"|(?:final_price|special_price|price|finalPrice|salePrice))\s*[:=]\s*["\']?([0-9]{6,9})', window, re.IGNORECASE)
+                if pm:
+                    candidate = int(pm.group(1))
+                    if 300000 <= candidate <= 30000000:
+                        price = candidate
+
+    # 4) Fallback: lấy giá trong bảng giá bài viết đúng model + GENA loại Pro.
+    if not price:
+        model_text = " ".join(model)
+        pattern = r"Thay màn hình[^₫]{0,180}" + re.escape(model_text).replace(r"\ ", r"\s+") + r"[^₫]{0,180}GENA\s+loại\s+Pro[^0-9]{0,80}([0-9\.\,]+)\s*đ"
+        tm = re.search(pattern, page_text, re.IGNORECASE)
+        if tm:
+            price = int(re.sub(r"[^0-9]", "", tm.group(1)))
+
+    if not price or price < 100000:
         return None
 
     deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
