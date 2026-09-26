@@ -265,16 +265,19 @@ def fetch_battery_direct(product_name: str, cfg):
             f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-pisen",
             f"{DTV_BASE}/thay-pin-{slug}-pisen",
             f"{DTV_BASE}/thay-pin-pisen-{slug}",
+            f"{DTV_BASE}/thay-pin-{slug}",
         ]),
         ("GENA", [
             f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-gena",
             f"{DTV_BASE}/thay-pin-{slug}-gena",
             f"{DTV_BASE}/thay-pin-gena-{slug}",
+            f"{DTV_BASE}/thay-pin-{slug}",
         ]),
         ("VMAS", [
             f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-vmas",
             f"{DTV_BASE}/thay-pin-{slug}-vmas",
             f"{DTV_BASE}/thay-pin-vmas-{slug}",
+            f"{DTV_BASE}/thay-pin-{slug}",
         ]),
     ]
 
@@ -333,7 +336,9 @@ def fetch_battery_direct(product_name: str, cfg):
                 api_item = fetch_dtv_api_price_from_page(r.url)
                 if api_item and api_item.get("price"):
                     api_evidence = (api_item.get("name") or "") + " " + (api_item.get("url_path") or "")
-                    if model_ok(api_evidence or title_text):
+                    api_nt = normalize_text(api_evidence)
+                    brand_ok = brand.lower() in api_nt
+                    if model_ok(api_evidence or title_text) and brand_ok:
                         return result(
                             api_item["price"],
                             api_item.get("name") or title_text or f"Thay pin {product_name} {brand}",
