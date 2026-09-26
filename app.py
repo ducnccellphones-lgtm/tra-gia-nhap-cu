@@ -415,6 +415,85 @@ def fetch_battery_direct(product_name: str, cfg):
 
     return None
 
+def fetch_camera_direct(product_name: str, cfg, key: str):
+    slug = product_slug(product_name)
+    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}
+
+    if key == "camera_front":
+        urls = [
+            f"{DTV_BASE}/thay-camera-truoc-{slug}",
+            f"{DTV_BASE}/thay-camera-truoc-{slug}-chinh-hang-gena",
+        ]
+        required_phrase = "camera truoc"
+    else:
+        urls = [
+            f"{DTV_BASE}/thay-camera-sau-{slug}-chinh-hang-gena-loai-pro",
+            f"{DTV_BASE}/thay-camera-sau-{slug}-chinh-hang-gena",
+            f"{DTV_BASE}/thay-camera-sau-{slug}",
+        ]
+        required_phrase = "camera sau"
+
+    for direct_url in urls:
+        try:
+            r = requests.get(direct_url, headers=headers, timeout=12, allow_redirects=True)
+            if r.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(r.text, "html.parser")
+            page_text = " ".join(soup.stripped_strings)
+            title = soup.find("h1")
+            title_text = " ".join(title.stripped_strings) if title else ""
+            title_nt = normalize_text(title_text)
+
+            if not housing_model_matches(title_text or page_text[:1000], product_name):
+                continue
+            if required_phrase not in title_nt:
+                continue
+
+            api_item = fetch_dtv_api_price_from_page(r.url)
+            if api_item and api_item.get("price"):
+                api_text = normalize_text((api_item.get("name") or "") + " " + (api_item.get("url_path") or ""))
+                if housing_model_matches(api_text or title_text, product_name) and required_phrase in api_text:
+                    price = api_item["price"]
+                    deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+                    return {
+                        "key":key,
+                        "label":cfg["label"],
+                        "available":True,
+                        "service_name":api_item.get("name") or title_text,
+                        "repair_price":price,
+                        "support_rate":cfg["support_rate"],
+                        "support_amount":support,
+                        "max_support":cfg["max_support"],
+                        "deduction":deduction,
+                        "source_url":api_item.get("page_url") or r.url,
+                        "source_page":api_item.get("page_url") or r.url,
+                        "dtv_product_id":api_item.get("product_id"),
+                        "dtv_sku":api_item.get("sku"),
+                    }
+
+            prices = money_values(page_text)
+            if prices:
+                price = prices[0]
+                deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+                return {
+                    "key":key,
+                    "label":cfg["label"],
+                    "available":True,
+                    "service_name":title_text,
+                    "repair_price":price,
+                    "support_rate":cfg["support_rate"],
+                    "support_amount":support,
+                    "max_support":cfg["max_support"],
+                    "deduction":deduction,
+                    "source_url":r.url,
+                    "source_page":r.url
+                }
+        except Exception:
+            continue
+
+    return None
+
 def fetch_screen_direct(product_name: str, cfg):
     slug = product_slug(product_name)
     direct_url = f"{DTV_BASE}/thay-man-hinh-{slug}-chinh-hang-gena-loai-pro"
@@ -538,6 +617,11 @@ def fetch_repair_type(product_name: str, key: str):
             "max_support":cfg["max_support"],
             "source_page":DTV_BASE + "/thay-pin"
         }
+
+    if key in ("camera_front", "camera_back"):
+        direct = fetch_camera_direct(product_name, cfg, key)
+        if direct:
+            return direct
 
     if key == "screen":
         direct = fetch_screen_direct(product_name, cfg)
