@@ -14,6 +14,19 @@ let faultyKeys = new Set();
 
 const fmt = (n) => new Intl.NumberFormat("vi-VN").format(Number(n || 0)) + "đ";
 
+function fmtFormula(n) {
+  const value = Math.round(Number(n || 0) / 1000);
+  return new Intl.NumberFormat("vi-VN").format(value);
+}
+
+function fmtBonus(n) {
+  const value = Number(n || 0);
+  if (value >= 1000000 && value % 1000000 === 0) {
+    return (value / 1000000) + "TR";
+  }
+  return fmtFormula(value);
+}
+
 function normalizeTokens(text) {
   return String(text || "")
     .normalize("NFD")
@@ -304,15 +317,31 @@ function repairDeductionTotal() {
 function updateFinalPrice() {
   if (!currentProduct) return;
 
-  let base = Number(currentProduct[selectedKey] || 0);
-  if ($("#addSmember").checked) base += Number(currentProduct.tro_gia || 0);
-
+  const rawBase = Number(currentProduct[selectedKey] || 0);
+  const smember = $("#addSmember").checked ? Number(currentProduct.tro_gia || 0) : 0;
+  const base = rawBase + smember;
   const deduction = repairDeductionTotal();
   const finalPrice = Math.max(0, base - deduction);
 
   $("#baseTradePrice").textContent = fmt(base);
   $("#repairDeduction").textContent = "-" + fmt(deduction);
   $("#finalPrice").textContent = fmt(finalPrice);
+
+  const condition = conditionMeta.find(x => x.key === selectedKey);
+  const parts = [];
+  parts.push((condition?.title || "Giá máy").toUpperCase() + " " + fmtFormula(rawBase));
+
+  repairItems.forEach(item => {
+    if (!item?.available || !faultyKeys.has(item.key)) return;
+    parts.push("- " + fmtFormula(item.deduction) + " " + String(item.label || "").toUpperCase());
+  });
+
+  if (smember > 0) {
+    parts.push("+ " + fmtBonus(smember) + " SMEMBER");
+  }
+
+  parts.push("= " + fmtFormula(finalPrice));
+  $("#proposalText").textContent = parts.join(" ");
 }
 
 function escapeHtml(s) {
