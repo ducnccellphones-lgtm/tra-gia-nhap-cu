@@ -583,19 +583,36 @@ def fetch_camera_direct(product_name: str, cfg, key: str):
             if not text:
                 continue
 
+            # Trạng thái "Sắp về hàng" thường nằm ngoài thẻ <a>, trong card cha.
+            # Vì vậy phải đọc cả container của sản phẩm, không chỉ riêng text của link.
+            card_text = text
+            parent = a
+            for _ in range(5):
+                parent = getattr(parent, "parent", None)
+                if not parent:
+                    break
+                parent_text = " ".join(parent.stripped_strings)
+                if len(parent_text) > len(card_text):
+                    card_text = parent_text
+                # Dừng khi container đã đủ thông tin sản phẩm + giá.
+                if required_phrase in normalize_text(parent_text) and money_values(parent_text):
+                    break
+
             nt = normalize_text(text)
+            card_nt = normalize_text(card_text)
+
             if required_phrase not in nt:
                 continue
             if not housing_model_matches(text, product_name):
                 continue
             if "gena" not in nt and "gen a" not in nt:
                 continue
-            if "giu face id" in nt:
+            if "giu face id" in card_nt:
                 continue
-            if "sap ve hang" in nt:
+            if "sap ve hang" in card_nt:
                 continue
 
-            prices = money_values(text)
+            prices = money_values(card_text)
             href = str(a.get("href") or "")
             source_url = href if href.startswith("http") else (DTV_BASE + href if href else "")
 
