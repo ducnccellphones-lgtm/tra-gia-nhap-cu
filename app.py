@@ -85,6 +85,64 @@ def product_slug(product_name: str):
     text = re.sub(r"\s+", "-", text).strip("-")
     return text
 
+def fetch_battery_direct(product_name: str, cfg):
+    slug = product_slug(product_name)
+    candidates = [
+        f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-pisen",
+        f"{DTV_BASE}/thay-pin-{slug}-pisen",
+        f"{DTV_BASE}/thay-pin-pisen-{slug}",
+        f"{DTV_BASE}/thay-pin-{slug}",
+    ]
+
+    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}
+    model = model_tokens(product_name)
+
+    for direct_url in candidates:
+        try:
+            r = requests.get(direct_url, headers=headers, timeout=12, allow_redirects=True)
+            if r.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(r.text, "html.parser")
+            page_text = " ".join(soup.stripped_strings)
+            title = soup.find("h1")
+            title_text = " ".join(title.stripped_strings) if title else ""
+            nt = normalize_text(title_text + " " + page_text[:7000])
+
+            if not all(token in nt.split() for token in model):
+                continue
+            if "pisen" not in nt:
+                continue
+
+            match = re.search(r"Pisen(?!\s+siêu\s+cao)\s*([0-9\.\,]+)\s*₫", page_text, re.IGNORECASE)
+            if not match:
+                match = re.search(r"dung lượng chuẩn[^0-9]{0,80}([0-9\.\,]+)\s*₫", page_text, re.IGNORECASE)
+            if not match:
+                continue
+
+            price = int(re.sub(r"[^0-9]", "", match.group(1)))
+            if price < 100000:
+                continue
+
+            deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+            return {
+                "key":"battery",
+                "label":cfg["label"],
+                "available":True,
+                "service_name":title_text or f"Thay pin {product_name} Pisen dung lượng chuẩn",
+                "repair_price":price,
+                "support_rate":cfg["support_rate"],
+                "support_amount":support,
+                "max_support":cfg["max_support"],
+                "deduction":deduction,
+                "source_url":r.url,
+                "source_page":r.url
+            }
+        except Exception:
+            continue
+
+    return None
+
 def fetch_screen_direct(product_name: str, cfg):
     slug = product_slug(product_name)
     direct_url = f"{DTV_BASE}/thay-man-hinh-{slug}-chinh-hang-gena-loai-pro"
@@ -139,6 +197,11 @@ def fetch_repair_type(product_name: str, key: str):
     cfg = next((x for x in REPAIR_TYPES if x["key"] == key), None)
     if not cfg:
         return None
+
+    if key == "battery":
+        direct = fetch_battery_direct(product_name, cfg)
+        if direct:
+            return direct
 
     if key == "screen":
         direct = fetch_screen_direct(product_name, cfg)
