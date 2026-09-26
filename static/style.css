@@ -140,3 +140,7 @@ button{border:0;border-radius:11px;padding:0 18px;font-weight:800;cursor:pointer
 .orange-row .repair-title{color:#a55300}
 .orange-choices{flex-wrap:wrap}
 .orange-choices .repair-choice{min-width:88px}
+
+.proposal-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.copy-proposal-btn{padding:7px 11px;background:var(--red);color:#fff;border-radius:8px;font-size:11px;font-weight:900}
+.copy-proposal-btn:hover{background:var(--red2)}
