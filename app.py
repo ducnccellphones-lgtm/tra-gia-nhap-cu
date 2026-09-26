@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 import re
 import unicodedata
+import time
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -528,22 +529,40 @@ def fetch_battery_direct(product_name: str, cfg):
 
 def fetch_camera_direct(product_name: str, cfg, key: str):
     """
-    Camera: chỉ đọc trang RIÊNG của đúng model và chỉ nhận linh kiện GENA.
-    Không fallback sang danh mục tổng hay model khác.
-    Nếu không xác minh chắc chắn -> không hiển thị giá.
+    Camera lấy GIÁ LIVE từ trang Điện Thoại Vui tại thời điểm tra cứu.
+    Quy tắc an toàn:
+    - đúng model + biến thể
+    - đúng camera trước/sau
+    - chỉ GENA
+    - không fallback sang model khác
+    - không xác minh được giá live => không hiển thị
     """
     slug = product_slug(product_name)
-    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}
+    direction_slug = "thay-camera-truoc" if key == "camera_front" else "thay-camera-sau"
+    required_phrase = "camera truoc" if key == "camera_front" else "camera sau"
+    page_url = f"{DTV_BASE}/{direction_slug}-{slug}"
 
-    if key == "camera_front":
-        page_url = f"{DTV_BASE}/thay-camera-truoc-{slug}"
-        required_phrase = "camera truoc"
-    else:
-        page_url = f"{DTV_BASE}/thay-camera-sau-{slug}"
-        required_phrase = "camera sau"
+    # Bypass cache/CDN tối đa có thể và cố định nguồn Hà Nội.
+    live_url = page_url + ("&" if "?" in page_url else "?") + f"_live={int(time.time())}"
+    headers = {
+        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36",
+        "Accept-Language":"vi-VN,vi;q=0.9",
+        "Cache-Control":"no-cache, no-store, max-age=0",
+        "Pragma":"no-cache",
+    }
+    cookies = {
+        "province_id":"24",
+        "provinceId":"24",
+    }
 
     try:
-        r = requests.get(page_url, headers=headers, timeout=12, allow_redirects=True)
+        r = requests.get(
+            live_url,
+            headers=headers,
+            cookies=cookies,
+            timeout=15,
+            allow_redirects=True
+        )
         if r.status_code != 200:
             return None
 
@@ -552,54 +571,99 @@ def fetch_camera_direct(product_name: str, cfg, key: str):
         h1 = soup.find("h1")
         h1_text = " ".join(h1.stripped_strings) if h1 else ""
 
-        # Trang sau redirect phải vẫn đúng chính xác model.
+        # Trang phải đúng chính xác model.
         if not housing_model_matches(h1_text or page_text[:1200], product_name):
             return None
 
         candidates = []
+
+        # 1) Tìm card GENA đúng model ngay trên trang LIVE.
         for a in soup.find_all("a"):
             text = " ".join(a.stripped_strings)
             if not text:
                 continue
 
             nt = normalize_text(text)
-
-            # Đúng camera trước/sau.
             if required_phrase not in nt:
                 continue
-
-            # Đúng chính xác model + biến thể.
             if not housing_model_matches(text, product_name):
                 continue
-
-            # Chỉ lấy GENA.
             if "gena" not in nt and "gen a" not in nt:
                 continue
-
-            # Không lấy dịch vụ giữ Face ID hay mô tả khác.
             if "giu face id" in nt:
                 continue
 
             prices = money_values(text)
-            if not prices:
+            href = str(a.get("href") or "")
+            source_url = href if href.startswith("http") else (DTV_BASE + href if href else "")
+
+            if prices:
+                candidates.append({
+                    "service_name": text[:260],
+                    "price": prices[0],
+                    "source_url": source_url or r.url,
+                    "source":"live_category"
+                })
                 continue
 
-            href = str(a.get("href") or "")
-            source_url = href if href.startswith("http") else DTV_BASE + href
+            # 2) Nếu card chưa có giá số, vào đúng trang chi tiết của card và đọc giá live.
+            if source_url:
+                try:
+                    detail_url = source_url + ("&" if "?" in source_url else "?") + f"_live={int(time.time())}"
+                    dr = requests.get(
+                        detail_url,
+                        headers=headers,
+                        cookies=cookies,
+                        timeout=15,
+                        allow_redirects=True
+                    )
+                    if dr.status_code != 200:
+                        continue
 
-            candidates.append({
-                "service_name": text[:260],
-                "price": prices[0],
-                "source_url": source_url
-            })
+                    dsoup = BeautifulSoup(dr.text, "html.parser")
+                    dtext = " ".join(dsoup.stripped_strings)
+                    dh1 = dsoup.find("h1")
+                    dh1_text = " ".join(dh1.stripped_strings) if dh1 else ""
+
+                    if not housing_model_matches(dh1_text or dtext[:1200], product_name):
+                        continue
+
+                    dnt = normalize_text(dh1_text + " " + dtext[:3500])
+                    if required_phrase not in dnt:
+                        continue
+                    if "gena" not in dnt and "gen a" not in dnt:
+                        continue
+
+                    # Ưu tiên giá nằm cạnh biến thể Camera GENA.
+                    m = re.search(
+                        r"Camera\s+GENA[^0-9]{0,100}([0-9\.\,]+)\s*(?:₫|đ)",
+                        dtext,
+                        re.IGNORECASE
+                    )
+                    if not m:
+                        # Fallback an toàn: giá tiền đầu tiên >=100k trên đúng trang chi tiết GENA.
+                        vals = money_values(dtext)
+                        price = vals[0] if vals else 0
+                    else:
+                        price = int(re.sub(r"[^0-9]", "", m.group(1)))
+
+                    if price >= 100000:
+                        candidates.append({
+                            "service_name": dh1_text or text[:260],
+                            "price": price,
+                            "source_url": dr.url,
+                            "source":"live_detail"
+                        })
+                except Exception:
+                    continue
 
         if not candidates:
             return None
 
-        # Nếu có nhiều GENA cùng model:
-        # ưu tiên item không ghi "loại pro"; sau đó lấy giá thấp nhất trong đúng nhóm.
-        normal = [x for x in candidates if "loai pro" not in normalize_text(x["service_name"])]
-        pool = normal if normal else candidates
+        # Chỉ dùng ứng viên đúng model/direction/GENA.
+        # Nếu có nhiều ứng viên, ưu tiên trang chi tiết live; sau đó giá thấp nhất.
+        detail_candidates = [x for x in candidates if x["source"] == "live_detail"]
+        pool = detail_candidates if detail_candidates else candidates
         best = min(pool, key=lambda x: x["price"])
 
         price = best["price"]
@@ -617,7 +681,8 @@ def fetch_camera_direct(product_name: str, cfg, key: str):
             "deduction":deduction,
             "source_url":best["source_url"],
             "source_page":r.url,
-            "camera_verified":True
+            "camera_verified":True,
+            "camera_source":best["source"]
         }
 
     except Exception:
