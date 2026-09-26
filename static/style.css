@@ -30,7 +30,7 @@ button{border:0;border-radius:12px;padding:0 19px;font-weight:800;cursor:pointer
 .dropdown-label{font-size:11px;font-weight:900;letter-spacing:.7px;color:var(--red)}
 .dropdown-selected{margin-top:4px;font-size:14px;font-weight:800;color:var(--text)}
 .dropdown-arrow{font-size:14px;color:var(--red)}
-.product-dropdown-list{max-height:390px;overflow:auto;border-top:1px solid var(--line);background:#fff}
+.product-dropdown-list{max-height:320px;overflow:auto;border-top:1px solid var(--line);background:#fff}
 .product-option{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:10px;padding:13px 14px;border-bottom:1px solid #f0f1f3;cursor:pointer;transition:.15s}
 .product-option:last-child{border-bottom:0}
 .product-option:hover{background:#fff7f8}
