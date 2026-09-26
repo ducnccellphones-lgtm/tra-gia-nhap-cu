@@ -19,13 +19,6 @@ function fmtFormula(n) {
   return new Intl.NumberFormat("vi-VN").format(value);
 }
 
-function fmtBonus(n) {
-  const value = Number(n || 0);
-  if (value >= 1000000 && value % 1000000 === 0) {
-    return (value / 1000000) + "TR";
-  }
-  return fmtFormula(value);
-}
 
 function normalizeTokens(text) {
   return String(text || "")
@@ -185,8 +178,6 @@ async function selectProduct(p) {
 
   $("#productName").textContent = p.name || "";
   $("#productId").textContent = p.web_id || "—";
-  $("#smemberPrice").textContent = fmt(p.tro_gia);
-  $("#addSmember").checked = false;
 
   renderConditions();
   renderRepairLoading();
@@ -318,8 +309,7 @@ function updateFinalPrice() {
   if (!currentProduct) return;
 
   const rawBase = Number(currentProduct[selectedKey] || 0);
-  const smember = $("#addSmember").checked ? Number(currentProduct.tro_gia || 0) : 0;
-  const base = rawBase + smember;
+  const base = rawBase;
   const deduction = repairDeductionTotal();
   const finalPrice = Math.max(0, base - deduction);
 
@@ -335,10 +325,6 @@ function updateFinalPrice() {
     if (!item?.available || !faultyKeys.has(item.key)) return;
     parts.push("- " + fmtFormula(item.deduction) + " " + String(item.label || "").toUpperCase());
   });
-
-  if (smember > 0) {
-    parts.push("+ " + fmtBonus(smember) + " SMEMBER");
-  }
 
   parts.push("= " + fmtFormula(finalPrice));
   $("#proposalText").textContent = parts.join(" ");
@@ -358,7 +344,6 @@ btn.addEventListener("click", searchProducts);
 input.addEventListener("keydown", e => {
   if (e.key === "Enter") searchProducts();
 });
-$("#addSmember").addEventListener("change", updateFinalPrice);
 
 $("#resetRepairBtn").addEventListener("click", () => {
   faultyKeys.clear();
