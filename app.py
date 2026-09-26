@@ -257,79 +257,156 @@ def product_slug(product_name: str):
 
 def fetch_battery_direct(product_name: str, cfg):
     slug = product_slug(product_name)
-    candidates = [
-        f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-pisen",
-        f"{DTV_BASE}/thay-pin-{slug}-pisen",
-        f"{DTV_BASE}/thay-pin-pisen-{slug}",
-        f"{DTV_BASE}/thay-pin-{slug}",
+    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}
+
+    # Thứ tự ưu tiên: Pisen dung lượng chuẩn -> GENA dung lượng chuẩn -> VMAS
+    brand_candidates = [
+        ("Pisen", [
+            f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-pisen",
+            f"{DTV_BASE}/thay-pin-{slug}-pisen",
+            f"{DTV_BASE}/thay-pin-pisen-{slug}",
+        ]),
+        ("GENA", [
+            f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-gena",
+            f"{DTV_BASE}/thay-pin-{slug}-gena",
+            f"{DTV_BASE}/thay-pin-gena-{slug}",
+        ]),
+        ("VMAS", [
+            f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-vmas",
+            f"{DTV_BASE}/thay-pin-{slug}-vmas",
+            f"{DTV_BASE}/thay-pin-vmas-{slug}",
+        ]),
     ]
 
-    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}
-    model = model_tokens(product_name)
+    def model_ok(text):
+        target = iphone_model_signature(product_name)
+        candidate = iphone_model_signature(text)
+        if target:
+            return candidate is not None and candidate == target
+        words = set(normalize_text(text).split())
+        return all(token in words for token in model_tokens(product_name))
 
-    for direct_url in candidates:
-        try:
-            api_item = fetch_dtv_api_price_from_page(direct_url)
-            if api_item:
-                price = api_item["price"]
-                deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
-                return {
-                    "key":"battery",
-                    "label":cfg["label"],
-                    "available":True,
-                    "service_name":api_item.get("name") or f"Thay pin {product_name} Pisen dung lượng chuẩn",
-                    "repair_price":price,
-                    "support_rate":cfg["support_rate"],
-                    "support_amount":support,
-                    "max_support":cfg["max_support"],
-                    "deduction":deduction,
-                    "source_url":api_item.get("page_url") or direct_url,
-                    "source_page":api_item.get("page_url") or direct_url,
-                    "dtv_product_id":api_item.get("product_id"),
-                    "dtv_sku":api_item.get("sku"),
-                }
+    def result(price, name, url, brand, api_item=None):
+        deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+        return {
+            "key":"battery",
+            "label":cfg["label"],
+            "available":True,
+            "service_name":name,
+            "repair_price":price,
+            "support_rate":cfg["support_rate"],
+            "support_amount":support,
+            "max_support":cfg["max_support"],
+            "deduction":deduction,
+            "source_url":url,
+            "source_page":url,
+            "battery_brand":brand,
+            "dtv_product_id":(api_item or {}).get("product_id"),
+            "dtv_sku":(api_item or {}).get("sku"),
+        }
 
-            r = requests.get(direct_url, headers=headers, timeout=12, allow_redirects=True)
-            if r.status_code != 200:
+    # Ưu tiên các trang dịch vụ riêng theo từng hãng pin.
+    for brand, urls in brand_candidates:
+        for direct_url in urls:
+            try:
+                r = requests.get(direct_url, headers=headers, timeout=12, allow_redirects=True)
+                if r.status_code != 200:
+                    continue
+
+                soup = BeautifulSoup(r.text, "html.parser")
+                page_text = " ".join(soup.stripped_strings)
+                title = soup.find("h1")
+                title_text = " ".join(title.stripped_strings) if title else ""
+                evidence = title_text + " " + page_text[:5000]
+                nt = normalize_text(evidence)
+
+                if not model_ok(title_text or evidence):
+                    continue
+                if brand.lower() not in nt:
+                    continue
+
+                # Pisen/GENA: loại pin siêu cao, ưu tiên dung lượng chuẩn.
+                if brand in ("Pisen", "GENA") and "sieu cao" in nt:
+                    continue
+
+                # Giá từ API của chính trang nếu có.
+                api_item = fetch_dtv_api_price_from_page(r.url)
+                if api_item and api_item.get("price"):
+                    api_evidence = (api_item.get("name") or "") + " " + (api_item.get("url_path") or "")
+                    if model_ok(api_evidence or title_text):
+                        return result(
+                            api_item["price"],
+                            api_item.get("name") or title_text or f"Thay pin {product_name} {brand}",
+                            api_item.get("page_url") or r.url,
+                            brand,
+                            api_item
+                        )
+
+                # Nếu API không có giá: chỉ nhận giá số hiện trên trang.
+                # "Liên hệ" / hết hàng / sắp về không có giá số nên tự bỏ qua.
+                match = re.search(
+                    rf"{re.escape(brand)}[^0-9₫]{{0,160}}([0-9\.\,]+)\s*₫",
+                    page_text,
+                    re.IGNORECASE
+                )
+                if match:
+                    price = int(re.sub(r"[^0-9]", "", match.group(1)))
+                    if price >= 100000:
+                        return result(
+                            price,
+                            title_text or f"Thay pin {product_name} {brand}",
+                            r.url,
+                            brand
+                        )
+            except Exception:
                 continue
 
-            soup = BeautifulSoup(r.text, "html.parser")
-            page_text = " ".join(soup.stripped_strings)
-            title = soup.find("h1")
-            title_text = " ".join(title.stripped_strings) if title else ""
-            nt = normalize_text(title_text + " " + page_text[:7000])
+    # Fallback: quét danh mục và vẫn giữ thứ tự Pisen -> GENA -> VMAS.
+    try:
+        r = requests.get(DTV_BASE + "/thay-pin", headers=headers, timeout=12, allow_redirects=True)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
 
-            if not all(token in nt.split() for token in model):
-                continue
-            if "pisen" not in nt:
-                continue
+        grouped = {"Pisen": [], "GENA": [], "VMAS": []}
 
-            match = re.search(r"Pisen(?!\s+siêu\s+cao)\s*([0-9\.\,]+)\s*₫", page_text, re.IGNORECASE)
-            if not match:
-                match = re.search(r"dung lượng chuẩn[^0-9]{0,80}([0-9\.\,]+)\s*₫", page_text, re.IGNORECASE)
-            if not match:
+        for a in soup.find_all("a"):
+            text = " ".join(a.stripped_strings)
+            if not text or not model_ok(text):
                 continue
 
-            price = int(re.sub(r"[^0-9]", "", match.group(1)))
-            if price < 100000:
+            nt = normalize_text(text)
+            prices = money_values(text)
+            if not prices:
                 continue
 
-            deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
-            return {
-                "key":"battery",
-                "label":cfg["label"],
-                "available":True,
-                "service_name":title_text or f"Thay pin {product_name} Pisen dung lượng chuẩn",
-                "repair_price":price,
-                "support_rate":cfg["support_rate"],
-                "support_amount":support,
-                "max_support":cfg["max_support"],
-                "deduction":deduction,
-                "source_url":r.url,
-                "source_page":r.url
-            }
-        except Exception:
-            continue
+            href = str(a.get("href") or "")
+            source_url = href if href.startswith("http") else DTV_BASE + href
+
+            if "pisen" in nt and "sieu cao" not in nt:
+                grouped["Pisen"].append((prices[0], text[:260], source_url))
+            elif ("gena" in nt or "gen a" in nt) and "sieu cao" not in nt:
+                grouped["GENA"].append((prices[0], text[:260], source_url))
+            elif "vmas" in nt:
+                grouped["VMAS"].append((prices[0], text[:260], source_url))
+
+        for brand in ("Pisen", "GENA", "VMAS"):
+            if not grouped[brand]:
+                continue
+
+            price, service_name, source_url = min(grouped[brand], key=lambda x: x[0])
+
+            api_item = fetch_dtv_api_price_from_page(source_url)
+            if api_item and api_item.get("price"):
+                api_evidence = (api_item.get("name") or "") + " " + (api_item.get("url_path") or "")
+                if model_ok(api_evidence or service_name):
+                    price = api_item["price"]
+                    service_name = api_item.get("name") or service_name
+                    source_url = api_item.get("page_url") or source_url
+
+            return result(price, service_name, source_url, brand, api_item)
+
+    except Exception:
+        pass
 
     return None
 
@@ -448,6 +525,14 @@ def fetch_repair_type(product_name: str, key: str):
         direct = fetch_battery_direct(product_name, cfg)
         if direct:
             return direct
+        return {
+            "key":"battery",
+            "label":cfg["label"],
+            "available":False,
+            "support_rate":cfg["support_rate"],
+            "max_support":cfg["max_support"],
+            "source_page":DTV_BASE + "/thay-pin"
+        }
 
     if key == "screen":
         direct = fetch_screen_direct(product_name, cfg)
