@@ -12,6 +12,7 @@ app = Flask(__name__)
 CPS_API = "https://api.cellphones.com.vn/graphql-dashboard/graphql/query"
 COMPANY_ID = 3759
 DTV_BASE = "https://dienthoaivui.com.vn"
+DTV_API = "https://api.dienthoaivui.com.vn/graphql-dashboard/graphql/query"
 
 QUERY = """
 query old_trade_list_v2($newProduct: NewProductInput) {
@@ -78,6 +79,132 @@ def deduction_for(price: int, support_rate: float, max_support):
         support = min(support, max_support)
     return max(0, price - support), support
 
+
+def dtv_graphql(query: str):
+    r = requests.post(
+        DTV_API,
+        json={"query": query, "variables": {}},
+        headers={
+            "Content-Type": "application/json",
+            "Origin": DTV_BASE,
+            "Referer": DTV_BASE + "/",
+            "User-Agent": "Mozilla/5.0",
+        },
+        timeout=12,
+    )
+    r.raise_for_status()
+    return r.json()
+
+def extract_main_product_id(html: str, page_text: str):
+    # Ưu tiên tìm product_id nằm gần SKU của chính trang để tránh lấy nhầm sản phẩm gợi ý.
+    sku_match = re.search(r"\b\d+\.\d+\.\d+\.\d+\.\d+\b", page_text)
+    zones = []
+    if sku_match:
+        sku = sku_match.group(0)
+        raw_pos = html.find(sku)
+        if raw_pos >= 0:
+            zones.append(html[max(0, raw_pos - 12000):raw_pos + 12000])
+
+    zones.append(html[:80000])
+
+    patterns = [
+        r'"product_id"\s*:\s*"?([0-9]{4,})"?',
+        r'\\?"product_id\\?"\s*:\s*\\?"?([0-9]{4,})',
+        r'"productId"\s*:\s*"?([0-9]{4,})"?',
+        r'data-product-id=["\']([0-9]{4,})["\']',
+        r'product_id[^0-9]{0,25}([0-9]{4,})',
+    ]
+
+    for zone in zones:
+        for pattern in patterns:
+            m = re.search(pattern, zone, re.IGNORECASE)
+            if m:
+                return int(m.group(1))
+    return None
+
+def fetch_dtv_api_price_from_page(url: str):
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"},
+            timeout=12,
+            allow_redirects=True,
+        )
+        if r.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        page_text = " ".join(soup.stripped_strings)
+        product_id = extract_main_product_id(r.text, page_text)
+        if not product_id:
+            return None
+
+        query = f"""
+        {{
+          products(
+            filter: {{
+              static: {{
+                province_id: 24,
+                product_id: [\"{product_id}\"],
+                is_out_of_business: false,
+                price: {{from: 1}}
+              }}
+            }}
+            page: 1
+            size: 20
+          ) {{
+            data {{
+              general {{
+                product_id
+                parent_id
+                child_product
+                name
+                url_path
+                sku
+              }}
+              filterable {{
+                stock
+                price
+                special_price
+                views
+              }}
+            }}
+          }}
+        }}
+        """
+
+        raw = dtv_graphql(query)
+        data = (((raw.get("data") or {}).get("products") or {}).get("data") or [])
+        if not data:
+            return None
+
+        exact = None
+        for item in data:
+            general = item.get("general") or {}
+            if int(general.get("product_id") or 0) == product_id:
+                exact = item
+                break
+        item = exact or data[0]
+
+        f = item.get("filterable") or {}
+        special = int(f.get("special_price") or 0)
+        normal = int(f.get("price") or 0)
+        price = special if special > 0 else normal
+        if price <= 0:
+            return None
+
+        general = item.get("general") or {}
+        return {
+            "price": price,
+            "product_id": product_id,
+            "name": general.get("name"),
+            "url_path": general.get("url_path"),
+            "sku": general.get("sku"),
+            "page_url": r.url,
+        }
+    except Exception:
+        return None
+
 def product_slug(product_name: str):
     text = normalize_text(product_name)
     text = re.sub(r"\b(apple|samsung|xiaomi|oppo|vivo|realme|honor|huawei)\b", "", text)
@@ -99,6 +226,26 @@ def fetch_battery_direct(product_name: str, cfg):
 
     for direct_url in candidates:
         try:
+            api_item = fetch_dtv_api_price_from_page(direct_url)
+            if api_item:
+                price = api_item["price"]
+                deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+                return {
+                    "key":"battery",
+                    "label":cfg["label"],
+                    "available":True,
+                    "service_name":api_item.get("name") or f"Thay pin {product_name} Pisen dung lượng chuẩn",
+                    "repair_price":price,
+                    "support_rate":cfg["support_rate"],
+                    "support_amount":support,
+                    "max_support":cfg["max_support"],
+                    "deduction":deduction,
+                    "source_url":api_item.get("page_url") or direct_url,
+                    "source_page":api_item.get("page_url") or direct_url,
+                    "dtv_product_id":api_item.get("product_id"),
+                    "dtv_sku":api_item.get("sku"),
+                }
+
             r = requests.get(direct_url, headers=headers, timeout=12, allow_redirects=True)
             if r.status_code != 200:
                 continue
@@ -146,6 +293,28 @@ def fetch_battery_direct(product_name: str, cfg):
 def fetch_screen_direct(product_name: str, cfg):
     slug = product_slug(product_name)
     direct_url = f"{DTV_BASE}/thay-man-hinh-{slug}-chinh-hang-gena-loai-pro"
+
+    # Ưu tiên API nội bộ Điện Thoại Vui theo product_id của chính trang.
+    api_item = fetch_dtv_api_price_from_page(direct_url)
+    if api_item:
+        price = api_item["price"]
+        deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+        return {
+            "key":"screen",
+            "label":cfg["label"],
+            "available":True,
+            "service_name":api_item.get("name") or f"Thay màn hình {product_name} GENA loại Pro",
+            "repair_price":price,
+            "support_rate":cfg["support_rate"],
+            "support_amount":support,
+            "max_support":cfg["max_support"],
+            "deduction":deduction,
+            "source_url":api_item.get("page_url") or direct_url,
+            "source_page":api_item.get("page_url") or direct_url,
+            "dtv_product_id":api_item.get("product_id"),
+            "dtv_sku":api_item.get("sku"),
+        }
+
     r = requests.get(
         direct_url,
         headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"},
@@ -276,6 +445,14 @@ def fetch_repair_type(product_name: str, key: str):
         }
 
     best = min(candidates, key=lambda x: x["price"])
+
+    # Lấy lại giá hiện tại từ API sản phẩm nếu xác định được trang dịch vụ.
+    api_item = fetch_dtv_api_price_from_page(best["source_url"]) if best.get("source_url") else None
+    if api_item and api_item.get("price"):
+        best["price"] = api_item["price"]
+        best["service_name"] = api_item.get("name") or best["service_name"]
+        best["source_url"] = api_item.get("page_url") or best["source_url"]
+
     deduction, support = deduction_for(best["price"], cfg["support_rate"], cfg["max_support"])
     return {
         "key":key,"label":cfg["label"],"available":True,
