@@ -7,6 +7,8 @@ const detailCard = $("#detailCard");
 
 let currentProduct = null;
 let selectedKey = "thu_loai_1";
+let searchResults = [];
+let dropdownOpen = true;
 
 const fmt = (n) => new Intl.NumberFormat("vi-VN").format(Number(n || 0)) + "đ";
 
@@ -35,27 +37,94 @@ async function searchProducts() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Không lấy được dữ liệu.");
 
-    const products = data.products || [];
-    statusEl.textContent = products.length
-      ? "Tìm thấy " + products.length + " sản phẩm."
+    searchResults = data.products || [];
+    dropdownOpen = true;
+
+    statusEl.textContent = searchResults.length
+      ? "Tìm thấy " + searchResults.length + " sản phẩm."
       : "Không tìm thấy sản phẩm phù hợp.";
 
-    products.forEach(p => {
-      const el = document.createElement("button");
-      el.className = "result-item";
-      el.innerHTML =
-        '<div><div class="result-name">' + escapeHtml(p.name || "") +
-        '</div><div class="condition-desc">' + escapeHtml(p.brand || "") +
-        '</div></div><div class="result-price">' + fmt(p.thu_loai_1) + '</div>';
-      el.onclick = () => selectProduct(p);
-      resultsEl.appendChild(el);
-    });
+    renderProductDropdown();
   } catch (e) {
     statusEl.textContent = "Lỗi: " + e.message;
   } finally {
     btn.disabled = false;
     btn.textContent = "Tìm giá";
   }
+}
+
+function renderProductDropdown() {
+  resultsEl.innerHTML = "";
+  if (!searchResults.length) return;
+
+  const box = document.createElement("div");
+  box.className = "product-dropdown";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "product-dropdown-trigger";
+
+  const selectedName = currentProduct?.name || "Chọn sản phẩm";
+  trigger.innerHTML =
+    '<div><div class="dropdown-label">SẢN PHẨM</div><div class="dropdown-selected">' +
+    escapeHtml(selectedName) +
+    '</div></div><div class="dropdown-arrow">' + (dropdownOpen ? "▲" : "▼") + "</div>";
+
+  trigger.onclick = () => {
+    dropdownOpen = !dropdownOpen;
+    renderProductDropdown();
+  };
+
+  box.appendChild(trigger);
+
+  if (dropdownOpen) {
+    const list = document.createElement("div");
+    list.className = "product-dropdown-list";
+
+    searchResults.forEach((p, index) => {
+      const row = document.createElement("label");
+      row.className = "product-option" + (currentProduct?.web_id === p.web_id ? " selected" : "");
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "selectedProduct";
+      radio.checked = currentProduct?.web_id === p.web_id;
+      radio.value = String(index);
+
+      const tick = document.createElement("span");
+      tick.className = "product-tick";
+      tick.textContent = radio.checked ? "✓" : "";
+
+      const content = document.createElement("span");
+      content.className = "product-option-content";
+      content.innerHTML =
+        '<span class="product-option-name">' + escapeHtml(p.name || "") + "</span>" +
+        '<span class="product-option-brand">' + escapeHtml(p.brand || "") + "</span>";
+
+      const price = document.createElement("span");
+      price.className = "product-option-price";
+      price.textContent = fmt(p.thu_loai_1);
+
+      row.appendChild(radio);
+      row.appendChild(tick);
+      row.appendChild(content);
+      row.appendChild(price);
+
+      row.addEventListener("click", (e) => {
+        e.preventDefault();
+        dropdownOpen = false;
+        currentProduct = p;
+        renderProductDropdown();
+        selectProduct(p);
+      });
+
+      list.appendChild(row);
+    });
+
+    box.appendChild(list);
+  }
+
+  resultsEl.appendChild(box);
 }
 
 function selectProduct(p) {
@@ -82,7 +151,7 @@ function renderConditions() {
     el.innerHTML =
       '<div><div class="condition-title">' + c.title +
       '</div><div class="condition-desc">' + c.desc +
-      '</div></div><div class="condition-price">' + fmt(price) + '</div>';
+      '</div></div><div class="condition-price">' + fmt(price) + "</div>";
 
     el.onclick = () => {
       selectedKey = c.key;
@@ -118,6 +187,8 @@ input.addEventListener("keydown", e => {
 $("#addSmember").addEventListener("change", updateFinalPrice);
 $("#changeBtn").addEventListener("click", () => {
   detailCard.classList.add("hidden");
+  dropdownOpen = true;
+  renderProductDropdown();
   input.focus();
 });
 $("#copyBtn").addEventListener("click", async () => {
