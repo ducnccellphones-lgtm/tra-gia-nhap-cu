@@ -592,6 +592,8 @@ def fetch_camera_direct(product_name: str, cfg, key: str):
                 continue
             if "giu face id" in nt:
                 continue
+            if "sap ve hang" in nt:
+                continue
 
             prices = money_values(text)
             href = str(a.get("href") or "")
@@ -632,6 +634,8 @@ def fetch_camera_direct(product_name: str, cfg, key: str):
                     if required_phrase not in dnt:
                         continue
                     if "gena" not in dnt and "gen a" not in dnt:
+                        continue
+                    if "sap ve hang" in dnt:
                         continue
 
                     # Ưu tiên giá nằm cạnh biến thể Camera GENA.
