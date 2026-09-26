@@ -78,11 +78,72 @@ def deduction_for(price: int, support_rate: float, max_support):
         support = min(support, max_support)
     return max(0, price - support), support
 
+def product_slug(product_name: str):
+    text = normalize_text(product_name)
+    text = re.sub(r"\b(apple|samsung|xiaomi|oppo|vivo|realme|honor|huawei)\b", "", text)
+    text = re.sub(r"\b\d+(gb|tb)\b", "", text)
+    text = re.sub(r"\s+", "-", text).strip("-")
+    return text
+
+def fetch_screen_direct(product_name: str, cfg):
+    slug = product_slug(product_name)
+    direct_url = f"{DTV_BASE}/thay-man-hinh-{slug}-chinh-hang-gena-loai-pro"
+    r = requests.get(
+        direct_url,
+        headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"},
+        timeout=12,
+        allow_redirects=True
+    )
+    if r.status_code != 200:
+        return None
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    page_text = " ".join(soup.stripped_strings)
+    title = soup.find("h1")
+    title_text = " ".join(title.stripped_strings) if title else ""
+
+    nt = normalize_text(title_text + " " + page_text[:5000])
+    model = model_tokens(product_name)
+    if not all(token in nt.split() for token in model):
+        return None
+    if "gena" not in nt or "loai pro" not in nt:
+        return None
+
+    match = re.search(r"GENA\s+loại\s+pro\s*([0-9\.\,]+)\s*₫", page_text, re.IGNORECASE)
+    if not match:
+        match = re.search(r"([0-9\.\,]+)\s*₫", page_text)
+    if not match:
+        return None
+
+    price = int(re.sub(r"[^0-9]", "", match.group(1)))
+    if price < 100000:
+        return None
+
+    deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+    return {
+        "key":"screen",
+        "label":cfg["label"],
+        "available":True,
+        "service_name":title_text or f"Thay màn hình {product_name} GENA loại Pro",
+        "repair_price":price,
+        "support_rate":cfg["support_rate"],
+        "support_amount":support,
+        "max_support":cfg["max_support"],
+        "deduction":deduction,
+        "source_url":r.url,
+        "source_page":r.url
+    }
+
 @lru_cache(maxsize=256)
 def fetch_repair_type(product_name: str, key: str):
     cfg = next((x for x in REPAIR_TYPES if x["key"] == key), None)
     if not cfg:
         return None
+
+    if key == "screen":
+        direct = fetch_screen_direct(product_name, cfg)
+        if direct:
+            return direct
 
     url = DTV_BASE + cfg["url"]
     r = requests.get(url, headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}, timeout=12)
