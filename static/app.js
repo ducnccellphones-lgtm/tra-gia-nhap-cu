@@ -9,6 +9,8 @@ let currentProduct = null;
 let selectedKey = "thu_loai_1";
 let searchResults = [];
 let dropdownOpen = true;
+let repairItems = [];
+let faultyKeys = new Set();
 
 const fmt = (n) => new Intl.NumberFormat("vi-VN").format(Number(n || 0)) + "đ";
 
@@ -33,7 +35,6 @@ function filterRelevantProducts(products, keyword) {
     return queryTokens.every(token => {
       if (productTokens.includes(token)) return true;
 
-      // Cho phép nhập dung lượng rút gọn: "256" khớp "256GB", "1" khớp "1TB"
       if (/^\d+$/.test(token)) {
         return productTokens.some(productToken =>
           productToken === token + "gb" || productToken === token + "tb"
@@ -163,17 +164,25 @@ function renderProductDropdown() {
   resultsEl.appendChild(box);
 }
 
-function selectProduct(p) {
+async function selectProduct(p) {
   currentProduct = p;
   selectedKey = "thu_loai_1";
+  faultyKeys = new Set();
+  repairItems = [];
+
   $("#productName").textContent = p.name || "";
   $("#productId").textContent = p.web_id || "—";
   $("#smemberPrice").textContent = fmt(p.tro_gia);
   $("#addSmember").checked = false;
+
   renderConditions();
+  renderRepairLoading();
   updateFinalPrice();
+
   detailCard.classList.remove("hidden");
   detailCard.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  await loadRepairPrices(p.name || "");
 }
 
 function renderConditions() {
@@ -199,11 +208,111 @@ function renderConditions() {
   });
 }
 
+function renderRepairLoading() {
+  $("#repairStatus").textContent = "Đang lấy giá sửa...";
+  $("#repairList").innerHTML = '<div class="repair-loading">Đang đối chiếu giá Điện Thoại Vui...</div>';
+}
+
+async function loadRepairPrices(productName) {
+  try {
+    const res = await fetch("/api/repair-prices?product_name=" + encodeURIComponent(productName));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Không lấy được giá sửa.");
+
+    repairItems = (data.items || []).filter(Boolean);
+    $("#repairStatus").textContent = "Nguồn: Điện Thoại Vui - Hà Nội";
+    renderRepairs();
+    updateFinalPrice();
+  } catch (e) {
+    repairItems = [];
+    $("#repairStatus").textContent = "Chưa lấy được giá sửa";
+    $("#repairList").innerHTML =
+      '<div class="repair-loading error">Không lấy được bảng giá sửa lúc này. Giá nhập máy vẫn có thể tra bình thường.</div>';
+    updateFinalPrice();
+  }
+}
+
+function renderRepairs() {
+  const list = $("#repairList");
+  list.innerHTML = "";
+
+  repairItems.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "repair-row";
+
+    const info = document.createElement("div");
+    info.className = "repair-info";
+
+    let meta = "Chưa có giá phù hợp";
+    if (item.available) {
+      const supportPct = Math.round(Number(item.support_rate || 0) * 100);
+      const supportText = item.max_support
+        ? "Hỗ trợ " + supportPct + "% (tối đa " + fmt(item.max_support) + ")"
+        : (supportPct ? "Hỗ trợ " + supportPct + "%" : "Không hỗ trợ");
+
+      meta =
+        "Giá sửa " + fmt(item.repair_price) +
+        " • " + supportText +
+        " • Trừ " + fmt(item.deduction);
+    }
+
+    info.innerHTML =
+      '<div class="repair-title">' + escapeHtml(item.label || "") + "</div>" +
+      '<div class="repair-meta">' + escapeHtml(meta) + "</div>";
+
+    const choices = document.createElement("div");
+    choices.className = "repair-choices";
+
+    const okBtn = document.createElement("button");
+    okBtn.type = "button";
+    okBtn.className = "repair-choice" + (!faultyKeys.has(item.key) ? " active" : "");
+    okBtn.textContent = "Không lỗi";
+    okBtn.onclick = () => {
+      faultyKeys.delete(item.key);
+      renderRepairs();
+      updateFinalPrice();
+    };
+
+    const faultBtn = document.createElement("button");
+    faultBtn.type = "button";
+    faultBtn.className = "repair-choice fault" + (faultyKeys.has(item.key) ? " active" : "");
+    faultBtn.textContent = "Có lỗi";
+    faultBtn.disabled = !item.available;
+    faultBtn.title = item.available ? "" : "Chưa tìm thấy giá sửa phù hợp";
+    faultBtn.onclick = () => {
+      if (!item.available) return;
+      faultyKeys.add(item.key);
+      renderRepairs();
+      updateFinalPrice();
+    };
+
+    choices.appendChild(okBtn);
+    choices.appendChild(faultBtn);
+    row.appendChild(info);
+    row.appendChild(choices);
+    list.appendChild(row);
+  });
+}
+
+function repairDeductionTotal() {
+  return repairItems.reduce((sum, item) => {
+    if (!item?.available || !faultyKeys.has(item.key)) return sum;
+    return sum + Number(item.deduction || 0);
+  }, 0);
+}
+
 function updateFinalPrice() {
   if (!currentProduct) return;
-  let price = Number(currentProduct[selectedKey] || 0);
-  if ($("#addSmember").checked) price += Number(currentProduct.tro_gia || 0);
-  $("#finalPrice").textContent = fmt(price);
+
+  let base = Number(currentProduct[selectedKey] || 0);
+  if ($("#addSmember").checked) base += Number(currentProduct.tro_gia || 0);
+
+  const deduction = repairDeductionTotal();
+  const finalPrice = Math.max(0, base - deduction);
+
+  $("#baseTradePrice").textContent = fmt(base);
+  $("#repairDeduction").textContent = "-" + fmt(deduction);
+  $("#finalPrice").textContent = fmt(finalPrice);
 }
 
 function escapeHtml(s) {
@@ -228,7 +337,7 @@ $("#changeBtn").addEventListener("click", () => {
   input.focus();
 });
 $("#copyBtn").addEventListener("click", async () => {
-  const text = $("#productName").textContent + " - " + $("#finalPrice").textContent;
+  const text = $("#productName").textContent + " - Giá nhập cuối: " + $("#finalPrice").textContent;
   try {
     await navigator.clipboard.writeText(text);
     $("#copyBtn").textContent = "Đã copy";
