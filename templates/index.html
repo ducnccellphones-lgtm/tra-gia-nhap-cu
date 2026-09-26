@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Tra giá nhập cũ</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">CPS</div>
+      <div>
+        <div class="brand-title">TRA GIÁ NHẬP CŨ</div>
+        <div class="brand-sub">Tra cứu nhanh theo dữ liệu CellphoneS</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="search-card">
+      <div class="eyebrow">TÌM SẢN PHẨM</div>
+      <h1>Nhập tên máy cần thu cũ</h1>
+      <p class="muted">Ví dụ: <b>iPhone 13 Pro Max 256GB</b>, <b>S23 Ultra 256GB</b>...</p>
+
+      <div class="search-wrap">
+        <input id="searchInput" autocomplete="off" placeholder="Nhập tên máy..." />
+        <button id="searchBtn">Tìm giá</button>
+      </div>
+
+      <div id="status" class="status"></div>
+      <div id="results" class="results"></div>
+    </section>
+
+    <section id="detailCard" class="detail-card hidden">
+      <div class="detail-head">
+        <div>
+          <div class="eyebrow">SẢN PHẨM ĐÃ CHỌN</div>
+          <h2 id="productName"></h2>
+        </div>
+        <button class="ghost" id="changeBtn">Chọn máy khác</button>
+      </div>
+
+      <div class="info-strip">
+        <span>ID: <b id="productId">—</b></span>
+        <span>Trợ giá Smember: <b id="smemberPrice">—</b></span>
+      </div>
+
+      <div class="eyebrow conditions-title">CHỌN TÌNH TRẠNG MÁY</div>
+      <div id="conditionList" class="conditions"></div>
+
+      <div class="price-panel">
+        <div>
+          <div class="price-label">GIÁ THU DỰ KIẾN</div>
+          <div id="finalPrice" class="final-price">0đ</div>
+        </div>
+        <button id="copyBtn" class="copy-btn">Copy giá</button>
+      </div>
+
+      <label class="toggle-row">
+        <input type="checkbox" id="addSmember">
+        <span>Cộng trợ giá Smember vào giá hiển thị</span>
+      </label>
+
+      <div class="note">
+        <b>Lưu ý:</b> Giá là dữ liệu tra cứu tại thời điểm sử dụng. Giá thực tế có thể thay đổi theo tình trạng máy, pin, chính sách và kiểm tra tại cửa hàng.
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
