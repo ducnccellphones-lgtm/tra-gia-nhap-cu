@@ -12,6 +12,27 @@ let dropdownOpen = true;
 
 const fmt = (n) => new Intl.NumberFormat("vi-VN").format(Number(n || 0)) + "đ";
 
+function normalizeTokens(text) {
+  return String(text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function filterRelevantProducts(products, keyword) {
+  const queryTokens = normalizeTokens(keyword);
+  if (!queryTokens.length) return products;
+
+  return products.filter(product => {
+    const productTokens = new Set(normalizeTokens(product.name || ""));
+    return queryTokens.every(token => productTokens.has(token));
+  });
+}
+
 const conditionMeta = [
   { key: "just_activated", title: "Máy mới kích hoạt", desc: "Máy đẹp, điều kiện kích hoạt theo chính sách hiện hành." },
   { key: "thu_loai_1", title: "Loại 1", desc: "Máy hoạt động bình thường, màn đẹp, thân máy đẹp." },
@@ -37,12 +58,15 @@ async function searchProducts() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Không lấy được dữ liệu.");
 
-    searchResults = data.products || [];
+    const apiProducts = data.products || [];
+    searchResults = filterRelevantProducts(apiProducts, q);
     dropdownOpen = true;
+    currentProduct = null;
+    detailCard.classList.add("hidden");
 
     statusEl.textContent = searchResults.length
-      ? "Tìm thấy " + searchResults.length + " sản phẩm."
-      : "Không tìm thấy sản phẩm phù hợp.";
+      ? "Tìm thấy " + searchResults.length + " sản phẩm đúng từ khóa."
+      : "Không tìm thấy sản phẩm đúng model/dung lượng đã nhập.";
 
     renderProductDropdown();
   } catch (e) {
