@@ -415,11 +415,11 @@ $("#changeBtn").addEventListener("click", () => {
   input.focus();
 });
 $("#copyBtn").addEventListener("click", async () => {
-  const text = $("#productName").textContent + " - Giá nhập cuối: " + $("#finalPrice").textContent;
+  const text = $("#proposalText").textContent.trim();
   try {
     await navigator.clipboard.writeText(text);
     $("#copyBtn").textContent = "Đã copy";
-    setTimeout(() => $("#copyBtn").textContent = "Copy giá", 1200);
+    setTimeout(() => $("#copyBtn").textContent = "Copy", 1200);
   } catch {
     alert(text);
   }
