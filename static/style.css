@@ -124,3 +124,10 @@ button{border:0;border-radius:11px;padding:0 18px;font-weight:800;cursor:pointer
   .condition{align-items:flex-start;flex-direction:column}
   .price-panel{align-items:flex-end}
 }
+
+.repair-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}
+.reset-repair-btn{padding:7px 10px;border:1px solid #f1b8bf;background:#fff5f6;color:var(--red);border-radius:8px;font-size:11px;font-weight:900}
+.reset-repair-btn:hover{background:#ffe9ec}
+@media(max-width:620px){
+  .repair-actions{justify-content:flex-start}
+}
