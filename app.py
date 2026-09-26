@@ -34,8 +34,6 @@ REPAIR_TYPES = [
     {"key":"touch","label":"Kính cảm ứng","url":"/thay-kinh-cam-ung","support_rate":0.15,"max_support":500000,"required":[]},
     {"key":"housing","label":"Vỏ","url":"/thay-vo","support_rate":0.0,"max_support":None,"required":[]},
     {"key":"back_glass","label":"Kính lưng","url":"/thay-kinh-lung","support_rate":0.30,"max_support":None,"required":[]},
-    {"key":"camera_front","label":"Camera trước","url":"/thay-camera-truoc","support_rate":0.30,"max_support":None,"required":["camera truoc"]},
-    {"key":"camera_back","label":"Camera sau","url":"/thay-camera-sau","support_rate":0.30,"max_support":None,"required":["camera sau"]},
     {"key":"speaker_out","label":"Loa ngoài","url":"/thay-loa-ngoai","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"speaker_in","label":"Loa trong","url":"/thay-loa-trong","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"charging","label":"Chân sạc / cáp sạc","url":"/thay-cap-sac","support_rate":0.30,"max_support":None,"required":[]},
@@ -526,106 +524,6 @@ def fetch_battery_direct(product_name: str, cfg):
 
     return None
 
-def fetch_camera_direct(product_name: str, cfg, key: str):
-    """
-    Camera dùng trang danh mục RIÊNG của đúng model:
-    /thay-camera-truoc-{model}
-    /thay-camera-sau-{model}
-
-    Không dùng API product_id và không fallback sang danh mục camera tổng,
-    vì hai nguồn đó có thể lẫn sản phẩm model khác.
-    """
-    slug = product_slug(product_name)
-    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}
-
-    if key == "camera_front":
-        page_url = f"{DTV_BASE}/thay-camera-truoc-{slug}"
-        required_phrase = "camera truoc"
-    else:
-        page_url = f"{DTV_BASE}/thay-camera-sau-{slug}"
-        required_phrase = "camera sau"
-
-    try:
-        r = requests.get(page_url, headers=headers, timeout=12, allow_redirects=True)
-        if r.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(r.text, "html.parser")
-        page_text = " ".join(soup.stripped_strings)
-
-        # Trang sau redirect vẫn phải đúng model.
-        h1 = soup.find("h1")
-        h1_text = " ".join(h1.stripped_strings) if h1 else ""
-        if not housing_model_matches(h1_text or page_text[:1200], product_name):
-            return None
-
-        candidates = []
-
-        for a in soup.find_all("a"):
-            text = " ".join(a.stripped_strings)
-            if not text:
-                continue
-
-            nt = normalize_text(text)
-
-            # Bắt buộc đúng camera trước/sau.
-            if required_phrase not in nt:
-                continue
-
-            # Bắt buộc đúng chính xác đời + biến thể:
-            # 16 != 15, 16 Pro != 16 Pro Max...
-            if not housing_model_matches(text, product_name):
-                continue
-
-            # Ưu tiên linh kiện GENA. Không lấy dịch vụ giữ Face ID hay loại khác.
-            if "gena" not in nt:
-                continue
-            if "giu face id" in nt:
-                continue
-
-            prices = money_values(text)
-            if not prices:
-                continue
-
-            href = str(a.get("href") or "")
-            source_url = href if href.startswith("http") else DTV_BASE + href
-
-            candidates.append({
-                "service_name": text[:260],
-                "price": prices[0],
-                "source_url": source_url
-            })
-
-        if not candidates:
-            return None
-
-        # Nếu có nhiều GENA cho cùng model, ưu tiên mục không ghi "loại pro",
-        # sau đó mới lấy giá thấp nhất trong đúng nhóm.
-        normal = [x for x in candidates if "loai pro" not in normalize_text(x["service_name"])]
-        pool = normal if normal else candidates
-        best = min(pool, key=lambda x: x["price"])
-
-        price = best["price"]
-        deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
-
-        return {
-            "key":key,
-            "label":cfg["label"],
-            "available":True,
-            "service_name":best["service_name"],
-            "repair_price":price,
-            "support_rate":cfg["support_rate"],
-            "support_amount":support,
-            "max_support":cfg["max_support"],
-            "deduction":deduction,
-            "source_url":best["source_url"],
-            "source_page":r.url,
-            "camera_source":"exact_model_category"
-        }
-
-    except Exception:
-        return None
-
 def fetch_screen_direct(product_name: str, cfg):
     slug = product_slug(product_name)
     direct_url = f"{DTV_BASE}/thay-man-hinh-{slug}-chinh-hang-gena-loai-pro"
@@ -750,22 +648,6 @@ def fetch_repair_type(product_name: str, key: str):
             "source_page":DTV_BASE + "/thay-pin"
         }
 
-    if key in ("camera_front", "camera_back"):
-        direct = fetch_camera_direct(product_name, cfg, key)
-        if direct:
-            return direct
-        return {
-            "key":key,
-            "label":cfg["label"],
-            "available":False,
-            "support_rate":cfg["support_rate"],
-            "max_support":cfg["max_support"],
-            "source_page":(
-                DTV_BASE + ("/thay-camera-truoc-" if key == "camera_front" else "/thay-camera-sau-")
-                + product_slug(product_name)
-            )
-        }
-
     if key == "screen":
         direct = fetch_screen_direct(product_name, cfg)
         if direct:
@@ -786,8 +668,8 @@ def fetch_repair_type(product_name: str, key: str):
         nt = normalize_text(text)
         words = set(nt.split())
 
-        if key in ("housing", "camera_front", "camera_back"):
-            # Riêng VỎ và CAMERA phải khớp chính xác biến thể model.
+        if key == "housing":
+            # Riêng VỎ phải khớp chính xác biến thể model.
             if not housing_model_matches(text, product_name):
                 continue
         else:
