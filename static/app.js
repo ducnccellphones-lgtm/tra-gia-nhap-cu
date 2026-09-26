@@ -28,8 +28,20 @@ function filterRelevantProducts(products, keyword) {
   if (!queryTokens.length) return products;
 
   return products.filter(product => {
-    const productTokens = new Set(normalizeTokens(product.name || ""));
-    return queryTokens.every(token => productTokens.has(token));
+    const productTokens = normalizeTokens(product.name || "");
+
+    return queryTokens.every(token => {
+      if (productTokens.includes(token)) return true;
+
+      // Cho phép nhập dung lượng rút gọn: "256" khớp "256GB", "1" khớp "1TB"
+      if (/^\d+$/.test(token)) {
+        return productTokens.some(productToken =>
+          productToken === token + "gb" || productToken === token + "tb"
+        );
+      }
+
+      return false;
+    });
   });
 }
 
