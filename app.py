@@ -34,6 +34,8 @@ REPAIR_TYPES = [
     {"key":"touch","label":"Kính cảm ứng","url":"/thay-kinh-cam-ung","support_rate":0.15,"max_support":500000,"required":[]},
     {"key":"housing","label":"Vỏ","url":"/thay-vo","support_rate":0.0,"max_support":None,"required":[]},
     {"key":"back_glass","label":"Kính lưng","url":"/thay-kinh-lung","support_rate":0.30,"max_support":None,"required":[]},
+    {"key":"camera_front","label":"Camera trước","url":"/thay-camera-truoc/thay-camera-truoc-dien-thoai-iphone","support_rate":0.30,"max_support":None,"required":[]},
+    {"key":"camera_back","label":"Camera sau","url":"/thay-camera-sau/thay-camera-sau-dien-thoai-iphone","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"speaker_out","label":"Loa ngoài","url":"/thay-loa-ngoai","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"speaker_in","label":"Loa trong","url":"/thay-loa-trong","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"charging","label":"Chân sạc / cáp sạc","url":"/thay-cap-sac","support_rate":0.30,"max_support":None,"required":[]},
@@ -524,6 +526,103 @@ def fetch_battery_direct(product_name: str, cfg):
 
     return None
 
+def fetch_camera_direct(product_name: str, cfg, key: str):
+    """
+    Camera: chỉ đọc trang RIÊNG của đúng model và chỉ nhận linh kiện GENA.
+    Không fallback sang danh mục tổng hay model khác.
+    Nếu không xác minh chắc chắn -> không hiển thị giá.
+    """
+    slug = product_slug(product_name)
+    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}
+
+    if key == "camera_front":
+        page_url = f"{DTV_BASE}/thay-camera-truoc-{slug}"
+        required_phrase = "camera truoc"
+    else:
+        page_url = f"{DTV_BASE}/thay-camera-sau-{slug}"
+        required_phrase = "camera sau"
+
+    try:
+        r = requests.get(page_url, headers=headers, timeout=12, allow_redirects=True)
+        if r.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        page_text = " ".join(soup.stripped_strings)
+        h1 = soup.find("h1")
+        h1_text = " ".join(h1.stripped_strings) if h1 else ""
+
+        # Trang sau redirect phải vẫn đúng chính xác model.
+        if not housing_model_matches(h1_text or page_text[:1200], product_name):
+            return None
+
+        candidates = []
+        for a in soup.find_all("a"):
+            text = " ".join(a.stripped_strings)
+            if not text:
+                continue
+
+            nt = normalize_text(text)
+
+            # Đúng camera trước/sau.
+            if required_phrase not in nt:
+                continue
+
+            # Đúng chính xác model + biến thể.
+            if not housing_model_matches(text, product_name):
+                continue
+
+            # Chỉ lấy GENA.
+            if "gena" not in nt and "gen a" not in nt:
+                continue
+
+            # Không lấy dịch vụ giữ Face ID hay mô tả khác.
+            if "giu face id" in nt:
+                continue
+
+            prices = money_values(text)
+            if not prices:
+                continue
+
+            href = str(a.get("href") or "")
+            source_url = href if href.startswith("http") else DTV_BASE + href
+
+            candidates.append({
+                "service_name": text[:260],
+                "price": prices[0],
+                "source_url": source_url
+            })
+
+        if not candidates:
+            return None
+
+        # Nếu có nhiều GENA cùng model:
+        # ưu tiên item không ghi "loại pro"; sau đó lấy giá thấp nhất trong đúng nhóm.
+        normal = [x for x in candidates if "loai pro" not in normalize_text(x["service_name"])]
+        pool = normal if normal else candidates
+        best = min(pool, key=lambda x: x["price"])
+
+        price = best["price"]
+        deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+
+        return {
+            "key":key,
+            "label":cfg["label"],
+            "available":True,
+            "service_name":best["service_name"],
+            "repair_price":price,
+            "support_rate":cfg["support_rate"],
+            "support_amount":support,
+            "max_support":cfg["max_support"],
+            "deduction":deduction,
+            "source_url":best["source_url"],
+            "source_page":r.url,
+            "camera_verified":True
+        }
+
+    except Exception:
+        return None
+
 def fetch_screen_direct(product_name: str, cfg):
     slug = product_slug(product_name)
     direct_url = f"{DTV_BASE}/thay-man-hinh-{slug}-chinh-hang-gena-loai-pro"
@@ -646,6 +745,19 @@ def fetch_repair_type(product_name: str, key: str):
             "support_rate":cfg["support_rate"],
             "max_support":cfg["max_support"],
             "source_page":DTV_BASE + "/thay-pin"
+        }
+
+    if key in ("camera_front", "camera_back"):
+        direct = fetch_camera_direct(product_name, cfg, key)
+        if direct:
+            return direct
+        return {
+            "key":key,
+            "label":cfg["label"],
+            "available":False,
+            "support_rate":cfg["support_rate"],
+            "max_support":cfg["max_support"],
+            "source_page":DTV_BASE + cfg["url"]
         }
 
     if key == "screen":
