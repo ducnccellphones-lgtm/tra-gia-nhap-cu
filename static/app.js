@@ -11,6 +11,7 @@ let searchResults = [];
 let dropdownOpen = true;
 let repairItems = [];
 let faultyKeys = new Set();
+let orangeSpot = "none";
 
 const fmt = (n) => new Intl.NumberFormat("vi-VN").format(Number(n || 0)) + "đ";
 
@@ -174,6 +175,7 @@ async function selectProduct(p) {
   currentProduct = p;
   selectedKey = "thu_loai_1";
   faultyKeys = new Set();
+  orangeSpot = "none";
   repairItems = [];
 
   $("#productName").textContent = p.name || "";
@@ -240,6 +242,40 @@ function renderRepairs() {
   const list = $("#repairList");
   list.innerHTML = "";
 
+  const orangeRow = document.createElement("div");
+  orangeRow.className = "repair-row orange-row";
+
+  const orangeInfo = document.createElement("div");
+  orangeInfo.className = "repair-info";
+  orangeInfo.innerHTML =
+    '<div class="repair-title">Đốm cam</div>' +
+    '<div class="repair-meta">Đốm 1 cam: trừ 500.000đ • Đốm 2 cam: trừ 800.000đ</div>';
+
+  const orangeChoices = document.createElement("div");
+  orangeChoices.className = "repair-choices orange-choices";
+
+  [
+    { key: "none", label: "Không đốm" },
+    { key: "one", label: "Đốm 1 cam" },
+    { key: "two", label: "Đốm 2 cam" }
+  ].forEach(option => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "repair-choice" + (orangeSpot === option.key ? " active" : "");
+    if (option.key !== "none") b.classList.add("fault");
+    b.textContent = option.label;
+    b.onclick = () => {
+      orangeSpot = option.key;
+      renderRepairs();
+      updateFinalPrice();
+    };
+    orangeChoices.appendChild(b);
+  });
+
+  orangeRow.appendChild(orangeInfo);
+  orangeRow.appendChild(orangeChoices);
+  list.appendChild(orangeRow);
+
   repairItems.forEach(item => {
     const row = document.createElement("div");
     row.className = "repair-row";
@@ -298,11 +334,19 @@ function renderRepairs() {
   });
 }
 
+function orangeSpotDeduction() {
+  if (orangeSpot === "one") return 500000;
+  if (orangeSpot === "two") return 800000;
+  return 0;
+}
+
 function repairDeductionTotal() {
-  return repairItems.reduce((sum, item) => {
+  const repairTotal = repairItems.reduce((sum, item) => {
     if (!item?.available || !faultyKeys.has(item.key)) return sum;
     return sum + Number(item.deduction || 0);
   }, 0);
+
+  return repairTotal + orangeSpotDeduction();
 }
 
 function updateFinalPrice() {
@@ -320,6 +364,12 @@ function updateFinalPrice() {
   const condition = conditionMeta.find(x => x.key === selectedKey);
   const parts = [];
   parts.push((condition?.title || "Giá máy").toUpperCase() + " " + fmtFormula(rawBase));
+
+  if (orangeSpot === "one") {
+    parts.push("- 500 ĐỐM 1 CAM");
+  } else if (orangeSpot === "two") {
+    parts.push("- 800 ĐỐM 2 CAM");
+  }
 
   repairItems.forEach(item => {
     if (!item?.available || !faultyKeys.has(item.key)) return;
@@ -347,6 +397,7 @@ input.addEventListener("keydown", e => {
 
 $("#resetRepairBtn").addEventListener("click", () => {
   faultyKeys.clear();
+  orangeSpot = "none";
   renderRepairs();
   updateFinalPrice();
 
