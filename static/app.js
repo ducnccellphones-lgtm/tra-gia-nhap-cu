@@ -330,6 +330,19 @@ input.addEventListener("keydown", e => {
   if (e.key === "Enter") searchProducts();
 });
 $("#addSmember").addEventListener("change", updateFinalPrice);
+
+$("#resetRepairBtn").addEventListener("click", () => {
+  faultyKeys.clear();
+  renderRepairs();
+  updateFinalPrice();
+
+  const resetBtn = $("#resetRepairBtn");
+  const oldText = resetBtn.textContent;
+  resetBtn.textContent = "Đã reset";
+  setTimeout(() => {
+    resetBtn.textContent = oldText;
+  }, 1000);
+});
 $("#changeBtn").addEventListener("click", () => {
   detailCard.classList.add("hidden");
   dropdownOpen = true;
