@@ -37,12 +37,12 @@ REPAIR_TYPES = [
     {"key":"back_glass","label":"Kính lưng","url":"/thay-kinh-lung","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"camera_front","label":"Camera trước","url":"/thay-camera-truoc/thay-camera-truoc-dien-thoai-iphone","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"camera_back","label":"Camera sau","url":"/thay-camera-sau/thay-camera-sau-dien-thoai-iphone","support_rate":0.30,"max_support":None,"required":[]},
-    {"key":"face_id","label":"Face ID","url":"","support_rate":0.0,"max_support":None,"required":[],"special":"face_id"},
     {"key":"speaker_out","label":"Loa ngoài","url":"/thay-loa-ngoai","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"speaker_in","label":"Loa trong","url":"/thay-loa-trong","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"charging","label":"Chân sạc / cáp sạc","url":"/thay-cap-sac","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"vibration","label":"Rung","url":"/thay-rung","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"microphone","label":"Micro","url":"/thay-cap-micro","support_rate":0.30,"max_support":None,"required":[]},
+    {"key":"face_id","label":"Face ID","url":"","support_rate":0.0,"max_support":None,"required":[],"special":"face_id"},
 ]
 
 def esc_graphql(value: str) -> str:
