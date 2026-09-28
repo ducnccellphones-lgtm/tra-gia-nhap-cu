@@ -242,49 +242,6 @@ function renderRepairs() {
   const list = $("#repairList");
   list.innerHTML = "";
 
-  const manualSearch = document.createElement("div");
-  manualSearch.className = "dtv-search-box";
-
-  const searchTitle = document.createElement("div");
-  searchTitle.className = "dtv-search-title";
-  searchTitle.textContent = "TÌM KIẾM LINH KIỆN";
-
-  const searchRow = document.createElement("div");
-  searchRow.className = "dtv-search-row";
-
-  const searchInput = document.createElement("input");
-  searchInput.type = "text";
-  searchInput.className = "dtv-search-input";
-  searchInput.placeholder = currentProduct?.name
-    ? "Ví dụ: camera sau " + currentProduct.name
-    : "Nhập linh kiện cần tìm...";
-
-  const searchBtn = document.createElement("button");
-  searchBtn.type = "button";
-  searchBtn.className = "dtv-search-btn";
-  searchBtn.textContent = "Tìm trên Điện Thoại Vui";
-
-  const runDtvSearch = () => {
-    const q = searchInput.value.trim();
-    if (!q) {
-      searchInput.focus();
-      return;
-    }
-    const url = "https://dienthoaivui.com.vn/?s=" + encodeURIComponent(q);
-    window.open(url, "_blank", "noopener,noreferrer");
-  };
-
-  searchBtn.onclick = runDtvSearch;
-  searchInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") runDtvSearch();
-  });
-
-  searchRow.appendChild(searchInput);
-  searchRow.appendChild(searchBtn);
-  manualSearch.appendChild(searchTitle);
-  manualSearch.appendChild(searchRow);
-  list.appendChild(manualSearch);
-
   const orangeRow = document.createElement("div");
   orangeRow.className = "repair-row orange-row";
 
