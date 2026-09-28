@@ -165,7 +165,7 @@ function renderProductDropdown() {
 
       const price = document.createElement("span");
       price.className = "product-option-price";
-      price.textContent = fmt(p.thu_loai_1);
+      price.textContent = Number(p.thu_loai_1 || 0) > 0 ? fmt(p.thu_loai_1) : "Chưa có giá";
 
       row.appendChild(radio);
       row.appendChild(tick);
@@ -192,7 +192,9 @@ function renderProductDropdown() {
 async function selectProduct(p) {
   if (repairController) repairController.abort();
   currentProduct = p;
-  selectedKey = "thu_loai_1";
+  selectedKey = Number(p.thu_loai_1 || 0) > 0
+    ? "thu_loai_1"
+    : (conditionMeta.find(c => Number(p?.[c.key] || 0) > 0)?.key || "thu_loai_1");
   faultyKeys = new Set();
   orangeSpot = "none";
   manualRepairPrices = {};
@@ -442,13 +444,10 @@ function renderRepairs() {
     faultBtn.type = "button";
     faultBtn.className = "repair-choice fault" + (faultyKeys.has(item.key) ? " active" : "");
     faultBtn.textContent = "Có lỗi";
-    const faceIdHasPrice = !isFaceId || Number(currentProduct?.thu_loai_4 || 0) > 0;
-    faultBtn.disabled = !effective.available || !faceIdHasPrice || (faceIdFault && !isFaceId);
-    faultBtn.title = !faceIdHasPrice
-      ? "Loại 4 chưa có giá. Liên hệ QLNH để xác nhận giá nhập."
-      : (faceIdFault && !isFaceId
-        ? "Face ID đang lỗi: áp dụng giá Loại 4, không cộng thêm phí linh kiện."
-        : (effective.available ? "" : "Chưa có giá tự động. Hãy nhập giá thủ công."));
+    faultBtn.disabled = !effective.available || (faceIdFault && !isFaceId);
+    faultBtn.title = faceIdFault && !isFaceId
+      ? "Face ID đang lỗi: áp dụng giá Loại 4, không cộng thêm phí linh kiện."
+      : (effective.available ? "" : "Chưa có giá tự động. Hãy nhập giá thủ công.");
     faultBtn.onclick = () => {
       if (faceIdFault && !isFaceId) return;
       if (!effective.available) return;
