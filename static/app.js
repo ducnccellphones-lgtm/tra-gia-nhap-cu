@@ -12,6 +12,7 @@ let dropdownOpen = true;
 let repairItems = [];
 let faultyKeys = new Set();
 let orangeSpot = "none";
+let manualRepairPrices = {};
 
 const fmt = (n) => new Intl.NumberFormat("vi-VN").format(Number(n || 0)) + "đ";
 
@@ -176,6 +177,7 @@ async function selectProduct(p) {
   selectedKey = "thu_loai_1";
   faultyKeys = new Set();
   orangeSpot = "none";
+  manualRepairPrices = {};
   repairItems = [];
 
   $("#productName").textContent = p.name || "";
@@ -238,6 +240,44 @@ async function loadRepairPrices(productName) {
   }
 }
 
+function parseManualPrice(value) {
+  const digits = String(value || "").replace(/[^0-9]/g, "");
+  return digits ? Number(digits) : 0;
+}
+
+function calcRepairDeduction(item, originalPrice) {
+  const price = Number(originalPrice || 0);
+  if (!price) return 0;
+
+  const rate = Number(item?.support_rate || 0);
+  const maxSupport = item?.max_support == null ? null : Number(item.max_support);
+
+  let support = Math.round(price * rate);
+  if (maxSupport !== null) support = Math.min(support, maxSupport);
+
+  return Math.max(0, price - support);
+}
+
+function effectiveRepair(item) {
+  const manualPrice = Number(manualRepairPrices[item.key] || 0);
+
+  if (manualPrice > 0) {
+    return {
+      available: true,
+      repair_price: manualPrice,
+      deduction: calcRepairDeduction(item, manualPrice),
+      manual: true
+    };
+  }
+
+  return {
+    available: !!item.available,
+    repair_price: Number(item.repair_price || 0),
+    deduction: Number(item.deduction || 0),
+    manual: false
+  };
+}
+
 function renderRepairs() {
   const list = $("#repairList");
   list.innerHTML = "";
@@ -283,17 +323,18 @@ function renderRepairs() {
     const info = document.createElement("div");
     info.className = "repair-info";
 
+    const effective = effectiveRepair(item);
     let meta = "Chưa có giá phù hợp";
-    if (item.available) {
+    if (effective.available) {
       const supportPct = Math.round(Number(item.support_rate || 0) * 100);
       const supportText = item.max_support
         ? "Hỗ trợ " + supportPct + "% (tối đa " + fmt(item.max_support) + ")"
         : (supportPct ? "Hỗ trợ " + supportPct + "%" : "Không hỗ trợ");
 
       meta =
-        "Giá sửa " + fmt(item.repair_price) +
+        (effective.manual ? "Giá thủ công " : "Giá sửa ") + fmt(effective.repair_price) +
         " • " + supportText +
-        " • Trừ " + fmt(item.deduction);
+        " • Trừ " + fmt(effective.deduction);
     }
 
     const manualUrl = item.source_url || item.source_page || "";
@@ -321,10 +362,10 @@ function renderRepairs() {
     faultBtn.type = "button";
     faultBtn.className = "repair-choice fault" + (faultyKeys.has(item.key) ? " active" : "");
     faultBtn.textContent = "Có lỗi";
-    faultBtn.disabled = !item.available;
-    faultBtn.title = item.available ? "" : "Chưa tìm thấy giá sửa phù hợp";
+    faultBtn.disabled = !effective.available;
+    faultBtn.title = effective.available ? "" : "Chưa có giá tự động. Hãy nhập giá thủ công.";
     faultBtn.onclick = () => {
-      if (!item.available) return;
+      if (!effective.available) return;
       faultyKeys.add(item.key);
       renderRepairs();
       updateFinalPrice();
@@ -332,8 +373,55 @@ function renderRepairs() {
 
     choices.appendChild(okBtn);
     choices.appendChild(faultBtn);
+
+    const rightWrap = document.createElement("div");
+    rightWrap.className = "repair-right";
+
+    const manualWrap = document.createElement("div");
+    manualWrap.className = "manual-price-wrap";
+
+    const manualInput = document.createElement("input");
+    manualInput.type = "text";
+    manualInput.inputMode = "numeric";
+    manualInput.className = "manual-price-input";
+    manualInput.placeholder = "Điền giá thủ công";
+    manualInput.value = manualRepairPrices[item.key]
+      ? new Intl.NumberFormat("vi-VN").format(manualRepairPrices[item.key])
+      : "";
+
+    manualInput.addEventListener("input", (e) => {
+      const price = parseManualPrice(e.target.value);
+
+      if (price > 0) {
+        manualRepairPrices[item.key] = price;
+      } else {
+        delete manualRepairPrices[item.key];
+        faultyKeys.delete(item.key);
+      }
+
+      renderRepairs();
+      updateFinalPrice();
+
+      const refreshed = document.querySelector('.manual-price-input[data-key="' + item.key + '"]');
+      if (refreshed) {
+        refreshed.focus();
+        refreshed.setSelectionRange(refreshed.value.length, refreshed.value.length);
+      }
+    });
+    manualInput.dataset.key = item.key;
+
+    const manualHint = document.createElement("div");
+    manualHint.className = "manual-price-hint";
+    manualHint.textContent = "Nhập giá gốc linh kiện";
+
+    manualWrap.appendChild(manualInput);
+    manualWrap.appendChild(manualHint);
+
+    rightWrap.appendChild(choices);
+    rightWrap.appendChild(manualWrap);
+
     row.appendChild(info);
-    row.appendChild(choices);
+    row.appendChild(rightWrap);
     list.appendChild(row);
   });
 }
@@ -346,8 +434,9 @@ function orangeSpotDeduction() {
 
 function repairDeductionTotal() {
   const repairTotal = repairItems.reduce((sum, item) => {
-    if (!item?.available || !faultyKeys.has(item.key)) return sum;
-    return sum + Number(item.deduction || 0);
+    const effective = effectiveRepair(item);
+    if (!effective.available || !faultyKeys.has(item.key)) return sum;
+    return sum + Number(effective.deduction || 0);
   }, 0);
 
   return repairTotal + orangeSpotDeduction();
@@ -376,8 +465,9 @@ function updateFinalPrice() {
   }
 
   repairItems.forEach(item => {
-    if (!item?.available || !faultyKeys.has(item.key)) return;
-    parts.push("- " + fmtFormula(item.deduction) + " " + String(item.label || "").toUpperCase());
+    const effective = effectiveRepair(item);
+    if (!effective.available || !faultyKeys.has(item.key)) return;
+    parts.push("- " + fmtFormula(effective.deduction) + " " + String(item.label || "").toUpperCase());
   });
 
   parts.push("= " + fmtFormula(finalPrice));
@@ -402,6 +492,7 @@ input.addEventListener("keydown", e => {
 $("#resetRepairBtn").addEventListener("click", () => {
   faultyKeys.clear();
   orangeSpot = "none";
+  manualRepairPrices = {};
   renderRepairs();
   updateFinalPrice();
 
