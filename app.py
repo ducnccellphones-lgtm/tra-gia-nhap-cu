@@ -2,6 +2,8 @@ from flask import Flask, render_template, request, jsonify
 import re
 import unicodedata
 import time
+import threading
+from collections import defaultdict, deque
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -97,20 +99,46 @@ def iphone_model_signature(text: str):
 
     return (number, variant)
 
+def common_android_signature(text: str):
+    nt = normalize_text(text)
+
+    # Samsung S/A/Note: giữ đời + biến thể quan trọng.
+    m = re.search(r"\b(?:galaxy\s+)?(s|a|note)\s*(\d{1,3})(?:\s*(ultra|plus|fe|pro|max))?\b", nt)
+    if m:
+        return ("samsung", m.group(1) + m.group(2), m.group(3) or "base")
+
+    # Fold / Flip.
+    m = re.search(r"\b(?:galaxy\s+)?z\s*(fold|flip)\s*(\d{1,2})\b", nt)
+    if m:
+        return ("samsung", "z " + m.group(1), m.group(2))
+
+    # Pixel.
+    m = re.search(r"\bpixel\s+(\d{1,2})(?:\s+(pro|pro xl|xl|a))?\b", nt)
+    if m:
+        return ("pixel", m.group(1), m.group(2) or "base")
+
+    return None
+
 def housing_model_matches(candidate_text: str, product_name: str):
     target = iphone_model_signature(product_name)
     candidate = iphone_model_signature(candidate_text)
 
-    # Với iPhone, chỉ chấp nhận khi xác định được chính xác đời + biến thể.
+    # iPhone: khớp chính xác đời + biến thể.
     if target:
         return candidate is not None and candidate == target
 
-    # Các hãng khác giữ logic cũ.
+    # Một số dòng Android phổ biến: tránh nhầm Ultra/Plus/FE/Fold/Flip.
+    android_target = common_android_signature(product_name)
+    if android_target:
+        android_candidate = common_android_signature(candidate_text)
+        return android_candidate is not None and android_candidate == android_target
+
+    # Fallback cho model khác: vẫn yêu cầu đủ token model.
     words = set(normalize_text(candidate_text).split())
     return all(token in words for token in model_tokens(product_name))
 
 def money_values(text: str):
-    raw = re.findall(r"(?<!\d)(\d{1,3}(?:[\.\,]\d{3})+)\s*₫", text)
+    raw = re.findall(r"(?<!\d)(\d{1,3}(?:[\.\,]\d{3})+)\s*(?:₫|đ)", text, re.IGNORECASE)
     vals = []
     for value in raw:
         n = int(re.sub(r"[^0-9]", "", value))
@@ -876,13 +904,8 @@ def _fetch_repair_type_uncached(product_name: str, key: str):
         nt = normalize_text(text)
         words = set(nt.split())
 
-        if key == "housing":
-            # Riêng VỎ phải khớp chính xác biến thể model.
-            if not housing_model_matches(text, product_name):
-                continue
-        else:
-            if not all(token in words for token in model):
-                continue
+        if not housing_model_matches(text, product_name):
+            continue
 
         if any(normalize_text(req) not in nt for req in cfg["required"]):
             continue
@@ -931,6 +954,34 @@ def fetch_repair_type(product_name: str, key: str):
     return _fetch_repair_type_cached(product_name, key, cache_bucket)
 
 
+_RATE_LOCK = threading.Lock()
+_RATE_BUCKETS = defaultdict(deque)
+
+def client_ip():
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return forwarded or request.remote_addr or "unknown"
+
+def rate_limited(scope: str, limit: int, window_seconds: int = 60):
+    now = time.time()
+    key = (scope, client_ip())
+    with _RATE_LOCK:
+        q = _RATE_BUCKETS[key]
+        cutoff = now - window_seconds
+        while q and q[0] < cutoff:
+            q.popleft()
+        if len(q) >= limit:
+            return True
+        q.append(now)
+        return False
+
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Cache-Control"] = "no-store" if request.path.startswith("/api/") else "no-cache"
+    return response
+
 @app.get("/")
 def home():
     return render_template("index.html")
@@ -941,9 +992,14 @@ def health():
 
 @app.get("/api/search")
 def search():
+    if rate_limited("search", 40):
+        return jsonify({"products": [], "error": "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít phút."}), 429
+
     keyword = (request.args.get("q") or "").strip()
     if len(keyword) < 2:
         return jsonify({"products": [], "message": "Nhập ít nhất 2 ký tự."})
+    if len(keyword) > 100:
+        return jsonify({"products": [], "error": "Từ khóa quá dài."}), 400
 
     payload = {"query": QUERY % (esc_graphql(keyword), COMPANY_ID), "variables": {}}
     headers = {
@@ -979,16 +1035,23 @@ def search():
             })
 
         return jsonify({"products": cleaned, "count": len(cleaned), "note": node.get("trade_in_note") or ""})
-    except requests.RequestException as e:
-        return jsonify({"error":"Không kết nối được API CellphoneS.","detail":str(e),"products":[]}), 502
-    except Exception as e:
-        return jsonify({"error":"API trả dữ liệu không đúng định dạng.","detail":str(e),"products":[]}), 500
+    except requests.RequestException:
+        app.logger.exception("CellphoneS API request failed")
+        return jsonify({"error":"Không kết nối được API CellphoneS.","products":[]}), 502
+    except Exception:
+        app.logger.exception("CellphoneS API response error")
+        return jsonify({"error":"API trả dữ liệu không đúng định dạng.","products":[]}), 500
 
 @app.get("/api/repair-prices")
 def repair_prices():
+    if rate_limited("repair", 20):
+        return jsonify({"items": [], "error": "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít phút."}), 429
+
     product_name = (request.args.get("product_name") or "").strip()
     if not product_name:
         return jsonify({"items": [], "error": "Thiếu tên sản phẩm."}), 400
+    if len(product_name) > 120:
+        return jsonify({"items": [], "error": "Tên sản phẩm quá dài."}), 400
 
     results = {}
     with ThreadPoolExecutor(max_workers=6) as executor:
@@ -997,12 +1060,12 @@ def repair_prices():
             key = futures[future]
             try:
                 results[key] = future.result()
-            except Exception as e:
+            except Exception:
+                app.logger.exception("Repair lookup failed for %s / %s", product_name, key)
                 cfg = next(x for x in REPAIR_TYPES if x["key"] == key)
                 results[key] = {
                     "key":key,"label":cfg["label"],"available":False,
-                    "support_rate":cfg["support_rate"],"max_support":cfg["max_support"],
-                    "error":str(e)
+                    "support_rate":cfg["support_rate"],"max_support":cfg["max_support"]
                 }
 
     ordered = [results.get(cfg["key"]) for cfg in REPAIR_TYPES]
@@ -1010,7 +1073,8 @@ def repair_prices():
         "product_name":product_name,
         "region":"Hà Nội",
         "items":ordered,
-        "source":"Điện Thoại Vui"
+        "source":"Điện Thoại Vui",
+        "fetched_at": int(time.time())
     })
 
 if __name__ == "__main__":
