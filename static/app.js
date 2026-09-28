@@ -15,6 +15,10 @@ let orangeSpot = "none";
 let manualRepairPrices = {};
 let faceIdFault = false;
 let selectedKeyBeforeFaceId = null;
+let searchController = null;
+let repairController = null;
+let searchRequestId = 0;
+let repairRequestId = 0;
 
 const fmt = (n) => new Intl.NumberFormat("vi-VN").format(Number(n || 0)) + "đ";
 
@@ -71,14 +75,21 @@ async function searchProducts() {
     return;
   }
 
+  if (searchController) searchController.abort();
+  searchController = new AbortController();
+  const requestId = ++searchRequestId;
+
   btn.disabled = true;
   btn.textContent = "Đang tìm...";
   statusEl.textContent = "Đang lấy dữ liệu giá...";
   resultsEl.innerHTML = "";
 
   try {
-    const res = await fetch("/api/search?q=" + encodeURIComponent(q));
+    const res = await fetch("/api/search?q=" + encodeURIComponent(q), {
+      signal: searchController.signal
+    });
     const data = await res.json();
+    if (requestId !== searchRequestId) return;
     if (!res.ok) throw new Error(data.error || "Không lấy được dữ liệu.");
 
     const apiProducts = data.products || [];
@@ -93,10 +104,14 @@ async function searchProducts() {
 
     renderProductDropdown();
   } catch (e) {
-    statusEl.textContent = "Lỗi: " + e.message;
+    if (e?.name !== "AbortError" && requestId === searchRequestId) {
+      statusEl.textContent = "Lỗi: " + e.message;
+    }
   } finally {
-    btn.disabled = false;
-    btn.textContent = "Tìm giá";
+    if (requestId === searchRequestId) {
+      btn.disabled = false;
+      btn.textContent = "Tìm giá";
+    }
   }
 }
 
@@ -175,6 +190,7 @@ function renderProductDropdown() {
 }
 
 async function selectProduct(p) {
+  if (repairController) repairController.abort();
   currentProduct = p;
   selectedKey = "thu_loai_1";
   faultyKeys = new Set();
@@ -205,15 +221,22 @@ function renderConditions() {
 
   conditionMeta.forEach(c => {
     const price = Number(currentProduct?.[c.key] || 0);
+    const unavailable = price <= 0;
     const el = document.createElement("div");
-    el.className = "condition" + (selectedKey === c.key ? " active" : "") + (faceIdFault ? " locked" : "");
+    el.className =
+      "condition" +
+      (selectedKey === c.key ? " active" : "") +
+      (faceIdFault ? " locked" : "") +
+      (unavailable ? " unavailable" : "");
     el.innerHTML =
       '<div><div class="condition-title">' + c.title +
       '</div><div class="condition-desc">' + c.desc +
-      '</div></div><div class="condition-price">' + fmt(price) + "</div>";
+      '</div></div><div class="condition-price">' +
+      (unavailable ? "Chưa có giá" : fmt(price)) +
+      "</div>";
 
     el.onclick = () => {
-      if (faceIdFault) return;
+      if (faceIdFault || unavailable) return;
       selectedKey = c.key;
       renderConditions();
       updateFinalPrice();
@@ -229,16 +252,41 @@ function renderRepairLoading() {
 }
 
 async function loadRepairPrices(productName) {
+  if (repairController) repairController.abort();
+  repairController = new AbortController();
+  const requestId = ++repairRequestId;
+  const productIdAtRequest = String(currentProduct?.web_id || "");
+
   try {
-    const res = await fetch("/api/repair-prices?product_name=" + encodeURIComponent(productName));
+    const res = await fetch("/api/repair-prices?product_name=" + encodeURIComponent(productName), {
+      signal: repairController.signal
+    });
     const data = await res.json();
+
+    if (
+      requestId !== repairRequestId ||
+      productIdAtRequest !== String(currentProduct?.web_id || "")
+    ) return;
+
     if (!res.ok) throw new Error(data.error || "Không lấy được giá sửa.");
 
     repairItems = (data.items || []).filter(Boolean);
-    $("#repairStatus").textContent = "Nguồn: Điện Thoại Vui - Hà Nội";
+    const fetched = Number(data.fetched_at || 0) * 1000;
+    const stamp = fetched
+      ? new Intl.DateTimeFormat("vi-VN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric"
+        }).format(new Date(fetched))
+      : "";
+    $("#repairStatus").textContent =
+      "Nguồn: Điện Thoại Vui - Hà Nội" + (stamp ? " • " + stamp : "");
     renderRepairs();
     updateFinalPrice();
   } catch (e) {
+    if (e?.name === "AbortError" || requestId !== repairRequestId) return;
     repairItems = [];
     $("#repairStatus").textContent = "Chưa lấy được giá sửa";
     $("#repairList").innerHTML =
@@ -394,10 +442,13 @@ function renderRepairs() {
     faultBtn.type = "button";
     faultBtn.className = "repair-choice fault" + (faultyKeys.has(item.key) ? " active" : "");
     faultBtn.textContent = "Có lỗi";
-    faultBtn.disabled = !effective.available || (faceIdFault && !isFaceId);
-    faultBtn.title = faceIdFault && !isFaceId
-      ? "Face ID đang lỗi: áp dụng giá Loại 4, không cộng thêm phí linh kiện."
-      : (effective.available ? "" : "Chưa có giá tự động. Hãy nhập giá thủ công.");
+    const faceIdHasPrice = !isFaceId || Number(currentProduct?.thu_loai_4 || 0) > 0;
+    faultBtn.disabled = !effective.available || !faceIdHasPrice || (faceIdFault && !isFaceId);
+    faultBtn.title = !faceIdHasPrice
+      ? "Loại 4 chưa có giá. Liên hệ QLNH để xác nhận giá nhập."
+      : (faceIdFault && !isFaceId
+        ? "Face ID đang lỗi: áp dụng giá Loại 4, không cộng thêm phí linh kiện."
+        : (effective.available ? "" : "Chưa có giá tự động. Hãy nhập giá thủ công."));
     faultBtn.onclick = () => {
       if (faceIdFault && !isFaceId) return;
       if (!effective.available) return;
@@ -441,28 +492,45 @@ function renderRepairs() {
 
         if (price > 0) {
           manualRepairPrices[item.key] = price;
+          faultBtn.disabled = faceIdFault;
         } else {
           delete manualRepairPrices[item.key];
-          faultyKeys.delete(item.key);
+          if (!item.available) faultyKeys.delete(item.key);
+          faultBtn.disabled = !item.available || faceIdFault;
         }
 
-        renderRepairs();
         updateFinalPrice();
+      });
 
-        const refreshed = document.querySelector('.manual-price-input[data-key="' + item.key + '"]');
-        if (refreshed) {
-          refreshed.focus();
-          refreshed.setSelectionRange(refreshed.value.length, refreshed.value.length);
-        }
+      manualInput.addEventListener("blur", () => {
+        renderRepairs();
       });
       manualInput.dataset.key = item.key;
+
+      const manualTools = document.createElement("div");
+      manualTools.className = "manual-price-tools";
 
       const manualHint = document.createElement("div");
       manualHint.className = "manual-price-hint";
       manualHint.textContent = "Nhập giá gốc linh kiện";
+      manualTools.appendChild(manualHint);
+
+      if (manualRepairPrices[item.key]) {
+        const resetManualBtn = document.createElement("button");
+        resetManualBtn.type = "button";
+        resetManualBtn.className = "manual-reset-btn";
+        resetManualBtn.textContent = "Dùng giá tự động";
+        resetManualBtn.onclick = () => {
+          delete manualRepairPrices[item.key];
+          if (!item.available) faultyKeys.delete(item.key);
+          renderRepairs();
+          updateFinalPrice();
+        };
+        manualTools.appendChild(resetManualBtn);
+      }
 
       manualWrap.appendChild(manualInput);
-      manualWrap.appendChild(manualHint);
+      manualWrap.appendChild(manualTools);
       rightWrap.appendChild(manualWrap);
     } else {
       const spacer = document.createElement("div");
@@ -502,15 +570,22 @@ function updateFinalPrice() {
   const rawBase = Number(currentProduct[selectedKey] || 0);
   const base = rawBase;
   const deduction = repairDeductionTotal();
-  const finalPrice = Math.max(0, base - deduction);
+  const hasBasePrice = rawBase > 0;
+  const finalPrice = hasBasePrice ? Math.max(0, base - deduction) : 0;
 
-  $("#baseTradePrice").textContent = fmt(base);
+  $("#baseTradePrice").textContent = hasBasePrice ? fmt(base) : "Chưa có giá";
   $("#repairDeduction").textContent = "-" + fmt(deduction);
-  $("#finalPrice").textContent = fmt(finalPrice);
+  $("#finalPrice").textContent = hasBasePrice
+    ? fmt(finalPrice)
+    : (faceIdFault ? "Liên hệ QLNH" : "Chưa có giá");
 
   const condition = conditionMeta.find(x => x.key === selectedKey);
   const parts = [];
-  parts.push((condition?.title || "Giá máy").toUpperCase() + " " + fmtFormula(rawBase));
+  if (hasBasePrice) {
+    parts.push((condition?.title || "Giá máy").toUpperCase() + " " + fmtFormula(rawBase));
+  } else {
+    parts.push((condition?.title || "Giá máy").toUpperCase() + " CHƯA CÓ GIÁ");
+  }
 
   if (!faceIdFault) {
     if (orangeSpot === "one") {
@@ -527,7 +602,7 @@ function updateFinalPrice() {
     });
   }
 
-  parts.push("= " + fmtFormula(finalPrice));
+  parts.push(hasBasePrice ? "= " + fmtFormula(finalPrice) : "= LIÊN HỆ QLNH");
 
   $("#proposalText").textContent = parts.join(" ");
 
@@ -570,6 +645,7 @@ $("#resetRepairBtn").addEventListener("click", () => {
   }, 1000);
 });
 $("#changeBtn").addEventListener("click", () => {
+  if (repairController) repairController.abort();
   detailCard.classList.add("hidden");
   dropdownOpen = true;
   renderProductDropdown();
