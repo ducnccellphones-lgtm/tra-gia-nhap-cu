@@ -36,6 +36,7 @@ REPAIR_TYPES = [
     {"key":"housing","label":"Vỏ","url":"/thay-vo","support_rate":0.0,"max_support":None,"required":[]},
     {"key":"back_glass","label":"Kính lưng","url":"/thay-kinh-lung","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"camera_back","label":"Camera sau","url":"/thay-camera-sau/thay-camera-sau-dien-thoai-iphone","support_rate":0.30,"max_support":None,"required":[]},
+    {"key":"face_id","label":"Face ID","url":"","support_rate":0.0,"max_support":None,"required":[],"special":"face_id"},
     {"key":"speaker_out","label":"Loa ngoài","url":"/thay-loa-ngoai","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"speaker_in","label":"Loa trong","url":"/thay-loa-trong","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"charging","label":"Chân sạc / cáp sạc","url":"/thay-cap-sac","support_rate":0.30,"max_support":None,"required":[]},
@@ -818,6 +819,16 @@ def fetch_repair_type(product_name: str, key: str):
     cfg = next((x for x in REPAIR_TYPES if x["key"] == key), None)
     if not cfg:
         return None
+
+    if key == "face_id":
+        return {
+            "key":"face_id",
+            "label":"Face ID",
+            "available":True,
+            "special":"face_id",
+            "support_rate":0.0,
+            "max_support":None
+        }
 
     if key == "battery":
         direct = fetch_battery_direct(product_name, cfg)
