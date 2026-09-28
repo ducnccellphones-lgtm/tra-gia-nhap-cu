@@ -189,6 +189,8 @@ async function selectProduct(p) {
 
   renderConditions();
   renderRepairLoading();
+  const faceIdAlert = $("#faceIdAlert");
+  if (faceIdAlert) faceIdAlert.classList.add("hidden");
   updateFinalPrice();
 
   detailCard.classList.remove("hidden");
@@ -333,7 +335,6 @@ function renderRepairs() {
   repairItems.forEach(item => {
     const row = document.createElement("div");
     row.className = "repair-row";
-    if (item?.special === "face_id") row.classList.add("face-id-row");
     if (item?.key === "camera_front" || item?.key === "camera_back") row.classList.add("camera-row");
 
     const info = document.createElement("div");
@@ -341,9 +342,7 @@ function renderRepairs() {
 
     const effective = effectiveRepair(item);
     const isFaceId = item?.special === "face_id";
-    let meta = isFaceId
-      ? "Có lỗi → chuyển máy về Loại 4 và cần QLNH xác nhận giá nhập"
-      : "Chưa có giá phù hợp";
+    let meta = isFaceId ? "" : "Chưa có giá phù hợp";
     if (effective.available && !isFaceId) {
       const supportPct = Math.round(Number(item.support_rate || 0) * 100);
       const supportText = item.max_support
@@ -359,7 +358,7 @@ function renderRepairs() {
     const manualUrl = item.source_url || item.source_page || "";
     info.innerHTML =
       '<div class="repair-title">' + escapeHtml(item.label || "") + "</div>" +
-      '<div class="repair-meta">' + escapeHtml(meta) + "</div>" +
+      (meta ? '<div class="repair-meta">' + escapeHtml(meta) + "</div>" : "") +
       (!isFaceId && manualUrl
         ? '<a class="manual-price-link" href="' + escapeHtml(manualUrl) + '" target="_blank" rel="noopener noreferrer">Tra giá thủ công ↗</a>'
         : "");
@@ -457,6 +456,11 @@ function renderRepairs() {
       manualWrap.appendChild(manualInput);
       manualWrap.appendChild(manualHint);
       rightWrap.appendChild(manualWrap);
+    } else {
+      const spacer = document.createElement("div");
+      spacer.className = "manual-price-spacer";
+      spacer.setAttribute("aria-hidden", "true");
+      rightWrap.appendChild(spacer);
     }
 
     row.appendChild(info);
@@ -513,11 +517,12 @@ function updateFinalPrice() {
 
   parts.push("= " + fmtFormula(finalPrice));
 
-  if (faceIdFault) {
-    parts.push("• MÁY CÓ LỖI FACE ID, LIÊN HỆ QLNH ĐỂ XÁC NHẬN GIÁ NHẬP");
-  }
-
   $("#proposalText").textContent = parts.join(" ");
+
+  const faceIdAlert = $("#faceIdAlert");
+  if (faceIdAlert) {
+    faceIdAlert.classList.toggle("hidden", !faceIdFault);
+  }
 }
 
 function escapeHtml(s) {
