@@ -815,8 +815,7 @@ def fetch_screen_direct(product_name: str, cfg):
         "source_page":r.url
     }
 
-@lru_cache(maxsize=256)
-def fetch_repair_type(product_name: str, key: str):
+def _fetch_repair_type_uncached(product_name: str, key: str):
     cfg = next((x for x in REPAIR_TYPES if x["key"] == key), None)
     if not cfg:
         return None
@@ -919,6 +918,18 @@ def fetch_repair_type(product_name: str, key: str):
         "max_support":cfg["max_support"],"deduction":deduction,
         "source_url":best["source_url"],"source_page":url
     }
+
+REPAIR_CACHE_TTL_SECONDS = 60
+
+@lru_cache(maxsize=1024)
+def _fetch_repair_type_cached(product_name: str, key: str, cache_bucket: int):
+    return _fetch_repair_type_uncached(product_name, key)
+
+def fetch_repair_type(product_name: str, key: str):
+    # Cache tối đa 60 giây: giảm tải DTV nhưng vẫn cập nhật giá gần thời gian thực.
+    cache_bucket = int(time.time() // REPAIR_CACHE_TTL_SECONDS)
+    return _fetch_repair_type_cached(product_name, key, cache_bucket)
+
 
 @app.get("/")
 def home():
