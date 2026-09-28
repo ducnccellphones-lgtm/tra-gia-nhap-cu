@@ -147,15 +147,3 @@ button{border:0;border-radius:11px;padding:0 18px;font-weight:800;cursor:pointer
 
 .manual-price-link{display:inline-flex;align-items:center;gap:4px;margin-top:5px;font-size:10.5px;font-weight:900;color:var(--red);text-decoration:none}
 .manual-price-link:hover{text-decoration:underline;color:var(--red2)}
-
-.dtv-search-box{grid-column:1/-1;border:1px solid #dfe3e8;border-radius:11px;background:#fafbfc;padding:11px}
-.dtv-search-title{font-size:11px;font-weight:900;letter-spacing:.8px;color:var(--red);margin-bottom:7px}
-.dtv-search-row{display:flex;gap:8px}
-.dtv-search-input{flex:1;min-width:0;border:1.5px solid var(--line);border-radius:9px;padding:10px 11px;font-size:12px;outline:none;background:#fff}
-.dtv-search-input:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(215,0,24,.06)}
-.dtv-search-btn{background:var(--red);color:#fff;padding:0 13px;border-radius:9px;font-size:11px;font-weight:900;white-space:nowrap}
-.dtv-search-btn:hover{background:var(--red2)}
-@media(max-width:620px){
-  .dtv-search-row{flex-direction:column}
-  .dtv-search-btn{height:40px}
-}
