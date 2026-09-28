@@ -491,10 +491,17 @@ function renderRepairs() {
 
         if (price > 0) {
           manualRepairPrices[item.key] = price;
+          faultyKeys.add(item.key);
           faultBtn.disabled = faceIdFault;
+          faultBtn.classList.add("active");
+          okBtn.classList.remove("active");
         } else {
           delete manualRepairPrices[item.key];
-          if (!item.available) faultyKeys.delete(item.key);
+          if (!item.available) {
+            faultyKeys.delete(item.key);
+            faultBtn.classList.remove("active");
+            okBtn.classList.add("active");
+          }
           faultBtn.disabled = !item.available || faceIdFault;
         }
 
