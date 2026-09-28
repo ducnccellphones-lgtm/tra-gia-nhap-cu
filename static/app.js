@@ -336,6 +336,7 @@ function renderRepairs() {
     const row = document.createElement("div");
     row.className = "repair-row";
     if (item?.key === "camera_front" || item?.key === "camera_back") row.classList.add("camera-row");
+    if (faceIdFault && item?.special !== "face_id") row.classList.add("repair-suspended");
 
     const info = document.createElement("div");
     info.className = "repair-info";
@@ -358,6 +359,7 @@ function renderRepairs() {
     const manualUrl = item.source_url || item.source_page || "";
     info.innerHTML =
       '<div class="repair-title">' + escapeHtml(item.label || "") + "</div>" +
+      (effective.manual ? '<div class="manual-price-badge">ĐANG DÙNG GIÁ THỦ CÔNG</div>' : "") +
       (meta ? '<div class="repair-meta">' + escapeHtml(meta) + "</div>" : "") +
       (!isFaceId && manualUrl
         ? '<a class="manual-price-link" href="' + escapeHtml(manualUrl) + '" target="_blank" rel="noopener noreferrer">Tra giá thủ công ↗</a>'
@@ -370,7 +372,9 @@ function renderRepairs() {
     okBtn.type = "button";
     okBtn.className = "repair-choice" + (!faultyKeys.has(item.key) ? " active" : "");
     okBtn.textContent = "Không lỗi";
+    okBtn.disabled = faceIdFault && !isFaceId;
     okBtn.onclick = () => {
+      if (faceIdFault && !isFaceId) return;
       faultyKeys.delete(item.key);
 
       if (isFaceId) {
@@ -390,9 +394,12 @@ function renderRepairs() {
     faultBtn.type = "button";
     faultBtn.className = "repair-choice fault" + (faultyKeys.has(item.key) ? " active" : "");
     faultBtn.textContent = "Có lỗi";
-    faultBtn.disabled = !effective.available;
-    faultBtn.title = effective.available ? "" : "Chưa có giá tự động. Hãy nhập giá thủ công.";
+    faultBtn.disabled = !effective.available || (faceIdFault && !isFaceId);
+    faultBtn.title = faceIdFault && !isFaceId
+      ? "Face ID đang lỗi: áp dụng giá Loại 4, không cộng thêm phí linh kiện."
+      : (effective.available ? "" : "Chưa có giá tự động. Hãy nhập giá thủ công.");
     faultBtn.onclick = () => {
+      if (faceIdFault && !isFaceId) return;
       if (!effective.available) return;
       faultyKeys.add(item.key);
 
@@ -424,6 +431,7 @@ function renderRepairs() {
       manualInput.inputMode = "numeric";
       manualInput.className = "manual-price-input";
       manualInput.placeholder = "Điền giá thủ công";
+      manualInput.disabled = faceIdFault;
       manualInput.value = manualRepairPrices[item.key]
         ? new Intl.NumberFormat("vi-VN").format(manualRepairPrices[item.key])
         : "";
@@ -476,6 +484,8 @@ function orangeSpotDeduction() {
 }
 
 function repairDeductionTotal() {
+  if (faceIdFault) return 0;
+
   const repairTotal = repairItems.reduce((sum, item) => {
     const effective = effectiveRepair(item);
     if (!effective.available || !faultyKeys.has(item.key)) return sum;
@@ -502,18 +512,20 @@ function updateFinalPrice() {
   const parts = [];
   parts.push((condition?.title || "Giá máy").toUpperCase() + " " + fmtFormula(rawBase));
 
-  if (orangeSpot === "one") {
-    parts.push("- 500 ĐỐM 1 CAM");
-  } else if (orangeSpot === "two") {
-    parts.push("- 800 ĐỐM 2 CAM");
-  }
+  if (!faceIdFault) {
+    if (orangeSpot === "one") {
+      parts.push("- 500 ĐỐM 1 CAM");
+    } else if (orangeSpot === "two") {
+      parts.push("- 800 ĐỐM 2 CAM");
+    }
 
-  repairItems.forEach(item => {
-    const effective = effectiveRepair(item);
-    if (!effective.available || !faultyKeys.has(item.key)) return;
-    if (item?.special === "face_id") return;
-    parts.push("- " + fmtFormula(effective.deduction) + " " + String(item.label || "").toUpperCase());
-  });
+    repairItems.forEach(item => {
+      const effective = effectiveRepair(item);
+      if (!effective.available || !faultyKeys.has(item.key)) return;
+      if (item?.special === "face_id") return;
+      parts.push("- " + fmtFormula(effective.deduction) + " " + String(item.label || "").toUpperCase());
+    });
+  }
 
   parts.push("= " + fmtFormula(finalPrice));
 
