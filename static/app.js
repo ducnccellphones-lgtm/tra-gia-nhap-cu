@@ -296,9 +296,13 @@ function renderRepairs() {
         " • Trừ " + fmt(item.deduction);
     }
 
+    const manualUrl = item.source_url || item.source_page || "";
     info.innerHTML =
       '<div class="repair-title">' + escapeHtml(item.label || "") + "</div>" +
-      '<div class="repair-meta">' + escapeHtml(meta) + "</div>";
+      '<div class="repair-meta">' + escapeHtml(meta) + "</div>" +
+      (manualUrl
+        ? '<a class="manual-price-link" href="' + escapeHtml(manualUrl) + '" target="_blank" rel="noopener noreferrer">Tra giá thủ công ↗</a>'
+        : "");
 
     const choices = document.createElement("div");
     choices.className = "repair-choices";
