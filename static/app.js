@@ -13,6 +13,8 @@ let repairItems = [];
 let faultyKeys = new Set();
 let orangeSpot = "none";
 let manualRepairPrices = {};
+let faceIdFault = false;
+let selectedKeyBeforeFaceId = null;
 
 const fmt = (n) => new Intl.NumberFormat("vi-VN").format(Number(n || 0)) + "đ";
 
@@ -178,6 +180,8 @@ async function selectProduct(p) {
   faultyKeys = new Set();
   orangeSpot = "none";
   manualRepairPrices = {};
+  faceIdFault = false;
+  selectedKeyBeforeFaceId = null;
   repairItems = [];
 
   $("#productName").textContent = p.name || "";
@@ -200,13 +204,14 @@ function renderConditions() {
   conditionMeta.forEach(c => {
     const price = Number(currentProduct?.[c.key] || 0);
     const el = document.createElement("div");
-    el.className = "condition" + (selectedKey === c.key ? " active" : "");
+    el.className = "condition" + (selectedKey === c.key ? " active" : "") + (faceIdFault ? " locked" : "");
     el.innerHTML =
       '<div><div class="condition-title">' + c.title +
       '</div><div class="condition-desc">' + c.desc +
       '</div></div><div class="condition-price">' + fmt(price) + "</div>";
 
     el.onclick = () => {
+      if (faceIdFault) return;
       selectedKey = c.key;
       renderConditions();
       updateFinalPrice();
@@ -259,6 +264,15 @@ function calcRepairDeduction(item, originalPrice) {
 }
 
 function effectiveRepair(item) {
+  if (item?.special === "face_id") {
+    return {
+      available: true,
+      repair_price: 0,
+      deduction: 0,
+      manual: false
+    };
+  }
+
   const manualPrice = Number(manualRepairPrices[item.key] || 0);
 
   if (manualPrice > 0) {
@@ -324,8 +338,11 @@ function renderRepairs() {
     info.className = "repair-info";
 
     const effective = effectiveRepair(item);
-    let meta = "Chưa có giá phù hợp";
-    if (effective.available) {
+    const isFaceId = item?.special === "face_id";
+    let meta = isFaceId
+      ? "Có lỗi → chuyển máy về Loại 4 và cần QLNH xác nhận giá nhập"
+      : "Chưa có giá phù hợp";
+    if (effective.available && !isFaceId) {
       const supportPct = Math.round(Number(item.support_rate || 0) * 100);
       const supportText = item.max_support
         ? "Hỗ trợ " + supportPct + "% (tối đa " + fmt(item.max_support) + ")"
@@ -341,7 +358,7 @@ function renderRepairs() {
     info.innerHTML =
       '<div class="repair-title">' + escapeHtml(item.label || "") + "</div>" +
       '<div class="repair-meta">' + escapeHtml(meta) + "</div>" +
-      (manualUrl
+      (!isFaceId && manualUrl
         ? '<a class="manual-price-link" href="' + escapeHtml(manualUrl) + '" target="_blank" rel="noopener noreferrer">Tra giá thủ công ↗</a>'
         : "");
 
@@ -354,6 +371,16 @@ function renderRepairs() {
     okBtn.textContent = "Không lỗi";
     okBtn.onclick = () => {
       faultyKeys.delete(item.key);
+
+      if (isFaceId) {
+        faceIdFault = false;
+        if (selectedKeyBeforeFaceId) {
+          selectedKey = selectedKeyBeforeFaceId;
+        }
+        selectedKeyBeforeFaceId = null;
+        renderConditions();
+      }
+
       renderRepairs();
       updateFinalPrice();
     };
@@ -367,6 +394,14 @@ function renderRepairs() {
     faultBtn.onclick = () => {
       if (!effective.available) return;
       faultyKeys.add(item.key);
+
+      if (isFaceId) {
+        if (!faceIdFault) selectedKeyBeforeFaceId = selectedKey;
+        faceIdFault = true;
+        selectedKey = "thu_loai_4";
+        renderConditions();
+      }
+
       renderRepairs();
       updateFinalPrice();
     };
@@ -377,48 +412,50 @@ function renderRepairs() {
     const rightWrap = document.createElement("div");
     rightWrap.className = "repair-right";
 
-    const manualWrap = document.createElement("div");
-    manualWrap.className = "manual-price-wrap";
-
-    const manualInput = document.createElement("input");
-    manualInput.type = "text";
-    manualInput.inputMode = "numeric";
-    manualInput.className = "manual-price-input";
-    manualInput.placeholder = "Điền giá thủ công";
-    manualInput.value = manualRepairPrices[item.key]
-      ? new Intl.NumberFormat("vi-VN").format(manualRepairPrices[item.key])
-      : "";
-
-    manualInput.addEventListener("input", (e) => {
-      const price = parseManualPrice(e.target.value);
-
-      if (price > 0) {
-        manualRepairPrices[item.key] = price;
-      } else {
-        delete manualRepairPrices[item.key];
-        faultyKeys.delete(item.key);
-      }
-
-      renderRepairs();
-      updateFinalPrice();
-
-      const refreshed = document.querySelector('.manual-price-input[data-key="' + item.key + '"]');
-      if (refreshed) {
-        refreshed.focus();
-        refreshed.setSelectionRange(refreshed.value.length, refreshed.value.length);
-      }
-    });
-    manualInput.dataset.key = item.key;
-
-    const manualHint = document.createElement("div");
-    manualHint.className = "manual-price-hint";
-    manualHint.textContent = "Nhập giá gốc linh kiện";
-
-    manualWrap.appendChild(manualInput);
-    manualWrap.appendChild(manualHint);
-
     rightWrap.appendChild(choices);
-    rightWrap.appendChild(manualWrap);
+
+    if (!isFaceId) {
+      const manualWrap = document.createElement("div");
+      manualWrap.className = "manual-price-wrap";
+
+      const manualInput = document.createElement("input");
+      manualInput.type = "text";
+      manualInput.inputMode = "numeric";
+      manualInput.className = "manual-price-input";
+      manualInput.placeholder = "Điền giá thủ công";
+      manualInput.value = manualRepairPrices[item.key]
+        ? new Intl.NumberFormat("vi-VN").format(manualRepairPrices[item.key])
+        : "";
+
+      manualInput.addEventListener("input", (e) => {
+        const price = parseManualPrice(e.target.value);
+
+        if (price > 0) {
+          manualRepairPrices[item.key] = price;
+        } else {
+          delete manualRepairPrices[item.key];
+          faultyKeys.delete(item.key);
+        }
+
+        renderRepairs();
+        updateFinalPrice();
+
+        const refreshed = document.querySelector('.manual-price-input[data-key="' + item.key + '"]');
+        if (refreshed) {
+          refreshed.focus();
+          refreshed.setSelectionRange(refreshed.value.length, refreshed.value.length);
+        }
+      });
+      manualInput.dataset.key = item.key;
+
+      const manualHint = document.createElement("div");
+      manualHint.className = "manual-price-hint";
+      manualHint.textContent = "Nhập giá gốc linh kiện";
+
+      manualWrap.appendChild(manualInput);
+      manualWrap.appendChild(manualHint);
+      rightWrap.appendChild(manualWrap);
+    }
 
     row.appendChild(info);
     row.appendChild(rightWrap);
@@ -436,6 +473,7 @@ function repairDeductionTotal() {
   const repairTotal = repairItems.reduce((sum, item) => {
     const effective = effectiveRepair(item);
     if (!effective.available || !faultyKeys.has(item.key)) return sum;
+    if (item?.special === "face_id") return sum;
     return sum + Number(effective.deduction || 0);
   }, 0);
 
@@ -467,10 +505,16 @@ function updateFinalPrice() {
   repairItems.forEach(item => {
     const effective = effectiveRepair(item);
     if (!effective.available || !faultyKeys.has(item.key)) return;
+    if (item?.special === "face_id") return;
     parts.push("- " + fmtFormula(effective.deduction) + " " + String(item.label || "").toUpperCase());
   });
 
   parts.push("= " + fmtFormula(finalPrice));
+
+  if (faceIdFault) {
+    parts.push("• MÁY CÓ LỖI FACE ID, LIÊN HỆ QLNH ĐỂ XÁC NHẬN GIÁ NHẬP");
+  }
+
   $("#proposalText").textContent = parts.join(" ");
 }
 
@@ -493,6 +537,9 @@ $("#resetRepairBtn").addEventListener("click", () => {
   faultyKeys.clear();
   orangeSpot = "none";
   manualRepairPrices = {};
+  faceIdFault = false;
+  selectedKeyBeforeFaceId = null;
+  renderConditions();
   renderRepairs();
   updateFinalPrice();
 
