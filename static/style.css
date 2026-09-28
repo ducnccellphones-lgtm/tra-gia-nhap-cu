@@ -201,3 +201,13 @@ button{border:0;border-radius:11px;padding:0 18px;font-weight:800;cursor:pointer
 
 .manual-price-spacer{height:50px}
 .face-id-alert{margin-top:10px;border:1px solid #f3b8c0;background:#fff3f5;color:#a31525;border-radius:12px;padding:11px 13px;font-size:11.5px;font-weight:900;line-height:1.45}
+
+.orange-row{align-items:center}
+.orange-row .repair-right{min-width:0}
+.orange-choices{display:flex;flex-wrap:nowrap;gap:6px;justify-content:flex-end;width:auto}
+.orange-choices .repair-choice{min-width:86px;white-space:nowrap;flex:0 0 auto}
+@media(max-width:620px){
+  .orange-row{grid-template-columns:1fr}
+  .orange-choices{width:100%;flex-wrap:nowrap;justify-content:stretch}
+  .orange-choices .repair-choice{min-width:0;flex:1}
+}
