@@ -147,3 +147,14 @@ button{border:0;border-radius:11px;padding:0 18px;font-weight:800;cursor:pointer
 
 .manual-price-link{display:inline-flex;align-items:center;gap:4px;margin-top:5px;font-size:10.5px;font-weight:900;color:var(--red);text-decoration:none}
 .manual-price-link:hover{text-decoration:underline;color:var(--red2)}
+
+.repair-right{display:flex;flex-direction:column;align-items:flex-end;gap:7px;flex-shrink:0}
+.manual-price-wrap{width:100%;min-width:155px}
+.manual-price-input{width:100%;border:1px solid #d8dde4;border-radius:8px;padding:7px 9px;font-size:11px;outline:none;background:#fff}
+.manual-price-input:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(215,0,24,.06)}
+.manual-price-hint{font-size:9.5px;color:var(--muted);margin-top:3px;text-align:right}
+@media(max-width:620px){
+  .repair-right{width:100%;align-items:stretch}
+  .manual-price-wrap{min-width:0}
+  .manual-price-hint{text-align:left}
+}
