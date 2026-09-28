@@ -256,3 +256,20 @@ button{border:0;border-radius:11px;padding:0 18px;font-weight:800;cursor:pointer
   .topbar-inner{flex-direction:column;gap:8px}
   .creator-credit{text-align:left;max-width:none}
 }
+
+.topbar-inner{justify-content:flex-start}
+.creator-inline{
+  margin-top:2px;
+  font-size:10px;
+  font-weight:700;
+  line-height:1.35;
+  opacity:.9;
+  letter-spacing:.1px;
+}
+.brand-sub{margin-top:1px}
+@media(max-width:620px){
+  .creator-inline{
+    font-size:8.8px;
+    line-height:1.35;
+  }
+}
