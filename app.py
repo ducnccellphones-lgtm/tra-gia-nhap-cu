@@ -29,6 +29,7 @@ query old_trade_list_v2($newProduct: NewProductInput) {
 """
 
 REPAIR_TYPES = [
+    {"key":"face_id","label":"Face ID","url":"","support_rate":0.0,"max_support":None,"required":[],"special":"face_id"},
     {"key":"battery","label":"Pin","url":"/thay-pin","support_rate":0.30,"max_support":None,"required":["thay pin","pisen","dung lượng chuẩn"]},
     {"key":"screen","label":"Màn hình","url":"/thay-man-hinh","support_rate":0.15,"max_support":500000,"required":["thay màn hình","gena","loại pro"]},
     {"key":"glass","label":"Kính","url":"/thay-ep-kinh","support_rate":0.15,"max_support":500000,"required":[]},
@@ -42,7 +43,6 @@ REPAIR_TYPES = [
     {"key":"charging","label":"Chân sạc / cáp sạc","url":"/thay-cap-sac","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"vibration","label":"Rung","url":"/thay-rung","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"microphone","label":"Micro","url":"/thay-cap-micro","support_rate":0.30,"max_support":None,"required":[]},
-    {"key":"face_id","label":"Face ID","url":"","support_rate":0.0,"max_support":None,"required":[],"special":"face_id"},
 ]
 
 def esc_graphql(value: str) -> str:
