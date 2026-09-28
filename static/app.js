@@ -333,6 +333,8 @@ function renderRepairs() {
   repairItems.forEach(item => {
     const row = document.createElement("div");
     row.className = "repair-row";
+    if (item?.special === "face_id") row.classList.add("face-id-row");
+    if (item?.key === "camera_front" || item?.key === "camera_back") row.classList.add("camera-row");
 
     const info = document.createElement("div");
     info.className = "repair-info";
