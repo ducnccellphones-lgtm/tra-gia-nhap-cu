@@ -228,7 +228,9 @@ h2{font-size:22px;margin:5px 0 0}
 .repair-suspended:hover{border-color:var(--line);box-shadow:none}
 
 .orange-row{
-  grid-column:1/-1;align-items:center;
+  grid-column:1/-1;
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:center;
   background:#fffaf3;border-color:#ffd9a8;
 }
 .orange-row .repair-title{color:#a55300}
