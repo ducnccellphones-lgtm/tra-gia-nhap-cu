@@ -103,6 +103,7 @@ async function searchProducts() {
       : "Không tìm thấy sản phẩm đúng model/dung lượng đã nhập.";
 
     renderProductDropdown();
+    prefetchRepairPrices(searchResults);
   } catch (e) {
     if (e?.name !== "AbortError" && requestId === searchRequestId) {
       statusEl.textContent = "Lỗi: " + e.message;
@@ -253,26 +254,57 @@ function renderRepairLoading() {
   $("#repairList").innerHTML = '<div class="repair-loading">Đang đối chiếu giá Điện Thoại Vui...</div>';
 }
 
+const repairCache = new Map();
+const REPAIR_CACHE_MS = 5 * 60 * 1000;
+
+function fetchRepairData(productName) {
+  const key = String(productName || "").toLowerCase();
+  const hit = repairCache.get(key);
+
+  if (hit && Date.now() - hit.t < REPAIR_CACHE_MS) {
+    return hit.promise;
+  }
+
+  const promise = fetch("/api/repair-prices?product_name=" + encodeURIComponent(productName))
+    .then(async (res) => {
+      const data = await res.json();
+      if (!res.ok || data.warming) repairCache.delete(key);
+      return { ok: res.ok, data };
+    })
+    .catch((error) => {
+      repairCache.delete(key);
+      throw error;
+    });
+
+  repairCache.set(key, { t: Date.now(), promise });
+  return promise;
+}
+
+function prefetchRepairPrices(products) {
+  (products || []).slice(0, 5).forEach((product) => {
+    if (product?.name) fetchRepairData(product.name).catch(() => {});
+  });
+}
+
 async function loadRepairPrices(productName) {
   if (repairController) repairController.abort();
   repairController = new AbortController();
+
   const requestId = ++repairRequestId;
   const productIdAtRequest = String(currentProduct?.web_id || "");
 
   try {
-    const res = await fetch("/api/repair-prices?product_name=" + encodeURIComponent(productName), {
-      signal: repairController.signal
-    });
-    const data = await res.json();
+    const { ok, data } = await fetchRepairData(productName);
 
     if (
       requestId !== repairRequestId ||
       productIdAtRequest !== String(currentProduct?.web_id || "")
     ) return;
 
-    if (!res.ok) throw new Error(data.error || "Không lấy được giá sửa.");
+    if (!ok) throw new Error(data.error || "Không lấy được giá sửa.");
 
     repairItems = (data.items || []).filter(Boolean);
+
     const fetched = Number(data.fetched_at || 0) * 1000;
     const stamp = fetched
       ? new Intl.DateTimeFormat("vi-VN", {
@@ -283,12 +315,16 @@ async function loadRepairPrices(productName) {
           year: "numeric"
         }).format(new Date(fetched))
       : "";
-    $("#repairStatus").textContent =
-      "Nguồn: Điện Thoại Vui - Hà Nội" + (stamp ? " • " + stamp : "");
+
+    $("#repairStatus").textContent = data.warming
+      ? "Đang tải bảng giá Điện Thoại Vui, tra lại sau ít giây để đủ giá"
+      : "Nguồn: Điện Thoại Vui - Hà Nội" + (stamp ? " • " + stamp : "");
+
     renderRepairs();
     updateFinalPrice();
   } catch (e) {
-    if (e?.name === "AbortError" || requestId !== repairRequestId) return;
+    if (requestId !== repairRequestId) return;
+
     repairItems = [];
     $("#repairStatus").textContent = "Chưa lấy được giá sửa";
     $("#repairList").innerHTML =
