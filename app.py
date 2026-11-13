@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify
 import re
 import unicodedata
 import time
+import os
 import threading
 from collections import defaultdict, deque
 from functools import lru_cache
@@ -9,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
+from dtv_catalog import catalog
 
 app = Flask(__name__)
 
@@ -44,7 +46,7 @@ REPAIR_TYPES = [
     {"key":"speaker_in","label":"Loa trong","url":"/thay-loa-trong","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"charging","label":"Chân sạc / cáp sạc","url":"/thay-cap-sac","support_rate":0.30,"max_support":None,"required":[]},
     {"key":"vibration","label":"Rung","url":"/thay-rung","support_rate":0.30,"max_support":None,"required":[]},
-    {"key":"microphone","label":"Micro","url":"/thay-cap-micro","support_rate":0.30,"max_support":None,"required":[]},
+    {"key":"microphone","label":"Micro","url":"/thay-mic","support_rate":0.30,"max_support":None,"required":[]},
 ]
 
 def esc_graphql(value: str) -> str:
@@ -72,32 +74,17 @@ def model_tokens(product_name: str):
 
 def iphone_model_signature(text: str):
     """
-    Chỉ đọc biến thể nằm ngay sau số đời iPhone để không nhầm chữ Pro trong tên linh kiện.
-    Ví dụ:
-    iPhone 16 -> ("16", "base")
-    iPhone 16 Pro -> ("16", "pro")
-    iPhone 16 Pro Max -> ("16", "pro max")
+    Đọc đời + biến thể iPhone ngay sau chữ "iPhone".
+    Hỗ trợ cả 16e, Air, X/XR/XS, SE theo năm.
     """
     nt = normalize_text(text)
-    m = re.search(r"\biphone\s+(\d+)(?:\s+(pro)(?:\s+(max))?|\s+(plus)|\s+(mini)|\s+(se))?", nt)
+    m = re.search(
+        r"\biphone\s+(\d{1,2}[es]?|xs|xr|x|se|air)\b(?:\s+(20\d\d))?(?:\s+(pro max|pro|plus|max|mini)\b)?",
+        nt,
+    )
     if not m:
         return None
-
-    number = m.group(1)
-    if m.group(2) and m.group(3):
-        variant = "pro max"
-    elif m.group(2):
-        variant = "pro"
-    elif m.group(4):
-        variant = "plus"
-    elif m.group(5):
-        variant = "mini"
-    elif m.group(6):
-        variant = "se"
-    else:
-        variant = "base"
-
-    return (number, variant)
+    return (m.group(1), m.group(2) or "", m.group(3) or "base")
 
 def common_android_signature(text: str):
     nt = normalize_text(text)
@@ -843,115 +830,202 @@ def fetch_screen_direct(product_name: str, cfg):
         "source_page":r.url
     }
 
+# ---------------------------------------------------------------------------
+# DTV hybrid catalog: tải bảng giá theo danh mục vào RAM và refresh định kỳ.
+# Giữ nguyên toàn bộ rule nghiệp vụ hiện tại (Face ID, mức hỗ trợ, giá thủ công).
+# ---------------------------------------------------------------------------
+def _price_key(item):
+    return (item["price"], item.get("product_id") or 0)
+
+
+_FEATURES = {}
+_FEATURES_LOCK = threading.Lock()
+
+
+def _features(key: str):
+    items = catalog.items(key)
+    version = catalog.version(key)
+    cached = _FEATURES.get(key)
+    if cached and cached[0] == version:
+        return cached[1]
+
+    features = []
+    for item in items:
+        nt = normalize_text(item["name"])
+        features.append((
+            item,
+            nt,
+            iphone_model_signature(item["name"]),
+            common_android_signature(item["name"]),
+            set(nt.split()),
+        ))
+
+    with _FEATURES_LOCK:
+        _FEATURES[key] = (version, features)
+    return features
+
+
+def _model_rows(key: str, product_name: str):
+    target_iphone = iphone_model_signature(product_name)
+    target_android = None if target_iphone else common_android_signature(product_name)
+    tokens = None if (target_iphone or target_android) else model_tokens(product_name)
+
+    rows = []
+    for item, _nt, iphone_sig, android_sig, words in _features(key):
+        if target_iphone:
+            matched = iphone_sig == target_iphone
+        elif target_android:
+            matched = android_sig == target_android
+        else:
+            matched = all(token in words for token in tokens)
+
+        if matched:
+            rows.append(item)
+    return rows
+
+
+SERVICE_PREFER = {
+    "glass": (["ep kinh"], []),
+    "touch": (["kinh cam ung"], []),
+    "charging": (["chan sac", "cap sac"], ["khong day", "nfc"]),
+    "speaker_in": (["thay loa trong"], ["day noi"]),
+    "speaker_out": (["loa ngoai"], []),
+    "back_glass": (["kinh lung", "nap lung"], []),
+    "housing": (["vo"], []),
+    "vibration": (["rung"], []),
+    "microphone": (["micro", "mic"], []),
+}
+
+
+def _pick_catalog_service(key: str, product_name: str):
+    rows = _model_rows(key, product_name)
+    if not rows:
+        return None, ""
+
+    def normalized(item):
+        return normalize_text(item["name"])
+
+    if key == "screen":
+        pool = [
+            item for item in rows
+            if ("gena" in normalized(item) or "gen a" in normalized(item))
+            and re.search(r"\bloai pro\b", normalized(item))
+            and "loai ultra" not in normalized(item)
+        ]
+        return (min(pool, key=_price_key), "GENA") if pool else (None, "")
+
+    if key == "battery":
+        for brand, require_standard in (("pisen", True), ("gena", True), ("vmas", False)):
+            pool = [
+                item for item in rows
+                if brand in normalized(item)
+                and "sieu cao" not in normalized(item)
+                and (not require_standard or "dung luong chuan" in normalized(item))
+            ]
+            if pool:
+                label = {"pisen": "Pisen", "gena": "GENA", "vmas": "VMAS"}[brand]
+                return min(pool, key=_price_key), label
+        return None, ""
+
+    if key in ("camera_front", "camera_back"):
+        pool = [
+            item for item in rows
+            if ("gena" in normalized(item) or "gen a" in normalized(item))
+            and "giu face id" not in normalized(item)
+            and "kinh camera" not in normalized(item)
+            and "rua" not in normalized(item)
+        ]
+        return (min(pool, key=_price_key), "GENA") if pool else (None, "")
+
+    prefer = SERVICE_PREFER.get(key)
+    if prefer:
+        include, exclude = prefer
+        pool = [
+            item for item in rows
+            if any(token in normalized(item) for token in include)
+            and not any(token in normalized(item) for token in exclude)
+        ]
+        if pool:
+            rows = pool
+
+    return min(rows, key=_price_key), ""
+
+
+_RESULT_CACHE = {}
+
+
 def _fetch_repair_type_uncached(product_name: str, key: str):
-    cfg = next((x for x in REPAIR_TYPES if x["key"] == key), None)
+    cfg = next((item for item in REPAIR_TYPES if item["key"] == key), None)
     if not cfg:
         return None
 
     if key == "face_id":
         return {
-            "key":"face_id",
-            "label":"Face ID",
-            "available":True,
-            "special":"face_id",
-            "support_rate":0.0,
-            "max_support":None
+            "key": "face_id",
+            "label": "Face ID",
+            "available": True,
+            "special": "face_id",
+            "support_rate": 0.0,
+            "max_support": None,
         }
 
-    if key == "battery":
-        direct = fetch_battery_direct(product_name, cfg)
-        if direct:
-            return direct
+    source_page = DTV_BASE + cfg["url"]
+    item, brand = _pick_catalog_service(key, product_name)
+    if not item:
         return {
-            "key":"battery",
-            "label":cfg["label"],
-            "available":False,
-            "support_rate":cfg["support_rate"],
-            "max_support":cfg["max_support"],
-            "source_page":DTV_BASE + "/thay-pin"
+            "key": key,
+            "label": cfg["label"],
+            "available": False,
+            "support_rate": cfg["support_rate"],
+            "max_support": cfg["max_support"],
+            "source_page": source_page,
         }
 
-    if key in ("camera_front", "camera_back"):
-        direct = fetch_camera_direct(product_name, cfg, key)
-        if direct:
-            return direct
-        return {
-            "key":key,
-            "label":cfg["label"],
-            "available":False,
-            "support_rate":cfg["support_rate"],
-            "max_support":cfg["max_support"],
-            "source_page":DTV_BASE + cfg["url"]
-        }
-
-    if key == "screen":
-        direct = fetch_screen_direct(product_name, cfg)
-        if direct:
-            return direct
-
-    url = DTV_BASE + cfg["url"]
-    r = requests.get(url, headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}, timeout=12)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    model = model_tokens(product_name)
-    candidates = []
-
-    for a in soup.find_all("a"):
-        text = " ".join(a.stripped_strings)
-        if not text:
-            continue
-        nt = normalize_text(text)
-        words = set(nt.split())
-
-        if not housing_model_matches(text, product_name):
-            continue
-
-        if any(normalize_text(req) not in nt for req in cfg["required"]):
-            continue
-        prices = money_values(text)
-        if not prices:
-            continue
-        price = prices[0]
-        href = str(a.get("href") or "")
-        source_url = href if href.startswith("http") else DTV_BASE + href
-        candidates.append({"service_name":text[:260],"price":price,"source_url":source_url})
-
-    if not candidates:
-        return {
-            "key":key,"label":cfg["label"],"available":False,
-            "support_rate":cfg["support_rate"],"max_support":cfg["max_support"],
-            "source_page":url
-        }
-
-    best = min(candidates, key=lambda x: x["price"])
-
-    # Lấy lại giá hiện tại từ API sản phẩm nếu xác định được trang dịch vụ.
-    api_item = fetch_dtv_api_price_from_page(best["source_url"]) if best.get("source_url") else None
-    if api_item and api_item.get("price"):
-        best["price"] = api_item["price"]
-        best["service_name"] = api_item.get("name") or best["service_name"]
-        best["source_url"] = api_item.get("page_url") or best["source_url"]
-
-    deduction, support = deduction_for(best["price"], cfg["support_rate"], cfg["max_support"])
-    return {
-        "key":key,"label":cfg["label"],"available":True,
-        "service_name":best["service_name"],"repair_price":best["price"],
-        "support_rate":cfg["support_rate"],"support_amount":support,
-        "max_support":cfg["max_support"],"deduction":deduction,
-        "source_url":best["source_url"],"source_page":url
+    price = int(item["price"])
+    deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
+    result = {
+        "key": key,
+        "label": cfg["label"],
+        "available": True,
+        "service_name": item["name"],
+        "repair_price": price,
+        "support_rate": cfg["support_rate"],
+        "support_amount": support,
+        "max_support": cfg["max_support"],
+        "deduction": deduction,
+        "source_url": (
+            DTV_BASE + "/" + item["url_path"].lstrip("/")
+            if item.get("url_path") else source_page
+        ),
+        "source_page": source_page,
+        "dtv_product_id": item.get("product_id"),
+        "dtv_sku": item.get("sku"),
     }
+    if key == "battery":
+        result["battery_brand"] = brand
+    return result
 
-REPAIR_CACHE_TTL_SECONDS = 60
-
-@lru_cache(maxsize=1024)
-def _fetch_repair_type_cached(product_name: str, key: str, cache_bucket: int):
-    return _fetch_repair_type_uncached(product_name, key)
 
 def fetch_repair_type(product_name: str, key: str):
-    # Cache tối đa 60 giây: giảm tải DTV nhưng vẫn cập nhật giá gần thời gian thực.
-    cache_bucket = int(time.time() // REPAIR_CACHE_TTL_SECONDS)
-    return _fetch_repair_type_cached(product_name, key, cache_bucket)
+    if key == "face_id":
+        return _fetch_repair_type_uncached(product_name, key)
+
+    version = catalog.version(key)
+    cache_key = (product_name.lower(), key)
+    hit = _RESULT_CACHE.get(cache_key)
+    if hit and hit[0] == version and version:
+        return hit[1]
+
+    result = _fetch_repair_type_uncached(product_name, key)
+    if version:
+        if len(_RESULT_CACHE) > 5000:
+            _RESULT_CACHE.clear()
+        _RESULT_CACHE[cache_key] = (version, result)
+    return result
+
+
+if os.environ.get("DTV_DISABLE_BACKGROUND") != "1":
+    catalog.start_background()
 
 
 _RATE_LOCK = threading.Lock()
@@ -989,6 +1063,11 @@ def home():
 @app.get("/health")
 def health():
     return jsonify({"ok": True})
+
+@app.get("/api/dtv-status")
+def dtv_status():
+    return jsonify(catalog.status())
+
 
 @app.get("/api/search")
 def search():
@@ -1044,7 +1123,7 @@ def search():
 
 @app.get("/api/repair-prices")
 def repair_prices():
-    if rate_limited("repair", 20):
+    if rate_limited("repair", 90):
         return jsonify({"items": [], "error": "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít phút."}), 429
 
     product_name = (request.args.get("product_name") or "").strip()
@@ -1053,28 +1132,29 @@ def repair_prices():
     if len(product_name) > 120:
         return jsonify({"items": [], "error": "Tên sản phẩm quá dài."}), 400
 
+    # Sau cold start, chờ catalog tối đa 12 giây. Các lần sau chỉ đọc RAM.
+    catalog.wait_ready(timeout=12)
+
     results = {}
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(fetch_repair_type, product_name, cfg["key"]): cfg["key"] for cfg in REPAIR_TYPES}
-        for future in as_completed(futures):
-            key = futures[future]
-            try:
-                results[key] = future.result()
-            except Exception:
-                app.logger.exception("Repair lookup failed for %s / %s", product_name, key)
-                cfg = next(x for x in REPAIR_TYPES if x["key"] == key)
-                results[key] = {
-                    "key":key,"label":cfg["label"],"available":False,
-                    "support_rate":cfg["support_rate"],"max_support":cfg["max_support"]
-                }
+    for cfg in REPAIR_TYPES:
+        key = cfg["key"]
+        try:
+            results[key] = fetch_repair_type(product_name, key)
+        except Exception:
+            app.logger.exception("Repair lookup failed for %s / %s", product_name, key)
+            results[key] = {
+                "key":key,"label":cfg["label"],"available":False,
+                "support_rate":cfg["support_rate"],"max_support":cfg["max_support"]
+            }
 
     ordered = [results.get(cfg["key"]) for cfg in REPAIR_TYPES]
     return jsonify({
         "product_name":product_name,
         "region":"Hà Nội",
+        "warming": not catalog.all_ready(),
         "items":ordered,
         "source":"Điện Thoại Vui",
-        "fetched_at": int(time.time())
+        "fetched_at": catalog.fetched_at() or int(time.time())
     })
 
 if __name__ == "__main__":
