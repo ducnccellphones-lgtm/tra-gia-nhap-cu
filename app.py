@@ -1,23 +1,19 @@
 from flask import Flask, render_template, request, jsonify
 import re
 import unicodedata
-import time
 import os
+import time
 import threading
 from collections import defaultdict, deque
-from functools import lru_cache
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-from bs4 import BeautifulSoup
-from dtv_catalog import catalog
+
+from dtv_catalog import catalog, DTV_BASE
 
 app = Flask(__name__)
 
 CPS_API = "https://api.cellphones.com.vn/graphql-dashboard/graphql/query"
 COMPANY_ID = 3759
-DTV_BASE = "https://dienthoaivui.com.vn"
-DTV_API = "https://api.dienthoaivui.com.vn/graphql-dashboard/graphql/query"
 
 QUERY = """
 query old_trade_list_v2($newProduct: NewProductInput) {
@@ -33,7 +29,6 @@ query old_trade_list_v2($newProduct: NewProductInput) {
 """
 
 REPAIR_TYPES = [
-    {"key":"face_id","label":"Face ID","url":"","support_rate":0.0,"max_support":None,"required":[],"special":"face_id"},
     {"key":"battery","label":"Pin","url":"/thay-pin","support_rate":0.30,"max_support":None,"required":["thay pin","pisen","dung lượng chuẩn"]},
     {"key":"screen","label":"Màn hình","url":"/thay-man-hinh","support_rate":0.15,"max_support":500000,"required":["thay màn hình","gena","loại pro"]},
     {"key":"glass","label":"Kính","url":"/thay-ep-kinh","support_rate":0.15,"max_support":500000,"required":[]},
@@ -74,8 +69,10 @@ def model_tokens(product_name: str):
 
 def iphone_model_signature(text: str):
     """
-    Đọc đời + biến thể iPhone ngay sau chữ "iPhone".
-    Hỗ trợ cả 16e, Air, X/XR/XS, SE theo năm.
+    Doc doi + bien the iPhone ngay sau chu "iPhone" de khong nham chu Pro trong ten linh kien.
+    iPhone 16 -> ("16", "", "base"); iPhone 16 Pro Max -> ("16", "", "pro max");
+    iPhone 16e -> ("16e", "", "base"); iPhone Air -> ("air", "", "base");
+    iPhone XS Max -> ("xs", "", "max"); iPhone SE 2022 -> ("se", "2022", "base")
     """
     nt = normalize_text(text)
     m = re.search(
@@ -124,15 +121,6 @@ def housing_model_matches(candidate_text: str, product_name: str):
     words = set(normalize_text(candidate_text).split())
     return all(token in words for token in model_tokens(product_name))
 
-def money_values(text: str):
-    raw = re.findall(r"(?<!\d)(\d{1,3}(?:[\.\,]\d{3})+)\s*(?:₫|đ)", text, re.IGNORECASE)
-    vals = []
-    for value in raw:
-        n = int(re.sub(r"[^0-9]", "", value))
-        if n >= 100000:
-            vals.append(n)
-    return vals
-
 def deduction_for(price: int, support_rate: float, max_support):
     support = round(price * support_rate)
     if max_support is not None:
@@ -140,750 +128,96 @@ def deduction_for(price: int, support_rate: float, max_support):
     return max(0, price - support), support
 
 
-def dtv_graphql(query: str):
-    r = requests.post(
-        DTV_API,
-        json={"query": query, "variables": {}},
-        headers={
-            "Content-Type": "application/json",
-            "Origin": DTV_BASE,
-            "Referer": DTV_BASE + "/",
-            "User-Agent": "Mozilla/5.0",
-        },
-        timeout=12,
-    )
-    r.raise_for_status()
-    return r.json()
-
-def extract_main_product_id(html: str, page_text: str):
-    # Ưu tiên tìm product_id nằm gần SKU của chính trang để tránh lấy nhầm sản phẩm gợi ý.
-    sku_match = re.search(r"\b\d+\.\d+\.\d+\.\d+\.\d+\b", page_text)
-    zones = []
-    if sku_match:
-        sku = sku_match.group(0)
-        raw_pos = html.find(sku)
-        if raw_pos >= 0:
-            zones.append(html[max(0, raw_pos - 12000):raw_pos + 12000])
-
-    zones.append(html[:80000])
-
-    patterns = [
-        r'"product_id"\s*:\s*"?([0-9]{4,})"?',
-        r'\\?"product_id\\?"\s*:\s*\\?"?([0-9]{4,})',
-        r'"productId"\s*:\s*"?([0-9]{4,})"?',
-        r'data-product-id=["\']([0-9]{4,})["\']',
-        r'product_id[^0-9]{0,25}([0-9]{4,})',
-    ]
-
-    for zone in zones:
-        for pattern in patterns:
-            m = re.search(pattern, zone, re.IGNORECASE)
-            if m:
-                return int(m.group(1))
-    return None
-
-def fetch_dtv_api_price_from_page(url: str):
-    try:
-        r = requests.get(
-            url,
-            headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"},
-            timeout=12,
-            allow_redirects=True,
-        )
-        if r.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(r.text, "html.parser")
-        page_text = " ".join(soup.stripped_strings)
-        product_id = extract_main_product_id(r.text, page_text)
-        if not product_id:
-            return None
-
-        query = f"""
-        {{
-          products(
-            filter: {{
-              static: {{
-                province_id: 24,
-                product_id: [\"{product_id}\"],
-                is_out_of_business: false,
-                price: {{from: 1}}
-              }}
-            }}
-            page: 1
-            size: 20
-          ) {{
-            data {{
-              general {{
-                product_id
-                parent_id
-                child_product
-                name
-                url_path
-                sku
-              }}
-              filterable {{
-                stock
-                price
-                special_price
-                views
-              }}
-            }}
-          }}
-        }}
-        """
-
-        raw = dtv_graphql(query)
-        data = (((raw.get("data") or {}).get("products") or {}).get("data") or [])
-        if not data:
-            return None
-
-        exact = None
-        for item in data:
-            general = item.get("general") or {}
-            if int(general.get("product_id") or 0) == product_id:
-                exact = item
-                break
-        item = exact or data[0]
-
-        f = item.get("filterable") or {}
-        special = int(f.get("special_price") or 0)
-        normal = int(f.get("price") or 0)
-        price = special if special > 0 else normal
-        if price <= 0:
-            return None
-
-        general = item.get("general") or {}
-        return {
-            "price": price,
-            "product_id": product_id,
-            "name": general.get("name"),
-            "url_path": general.get("url_path"),
-            "sku": general.get("sku"),
-            "page_url": r.url,
-        }
-    except Exception:
-        return None
-
-def fetch_dtv_api_price_by_page_sku(url: str):
-    try:
-        r = requests.get(
-            url,
-            headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"},
-            timeout=12,
-            allow_redirects=True,
-        )
-        if r.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(r.text, "html.parser")
-        page_text = " ".join(soup.stripped_strings)
-        sku_match = re.search(r"\b\d+(?:\.\d+){4}\b", page_text)
-        if not sku_match:
-            return None
-        page_sku = sku_match.group(0)
-
-        raw = r.text
-        sku_pos = raw.find(page_sku)
-        zones = []
-        if sku_pos >= 0:
-            zones.append(raw[max(0, sku_pos - 25000):sku_pos + 25000])
-        zones.append(raw)
-
-        ids = []
-        patterns = [
-            r'"product_id"\s*:\s*"?([0-9]{4,})"?',
-            r'\\?"product_id\\?"\s*:\s*\\?"?([0-9]{4,})',
-            r'"productId"\s*:\s*"?([0-9]{4,})"?',
-            r'data-product-id=["\']([0-9]{4,})["\']',
-        ]
-        for zone in zones:
-            for pattern in patterns:
-                for pid in re.findall(pattern, zone, re.IGNORECASE):
-                    if pid not in ids:
-                        ids.append(pid)
-            if ids:
-                break
-
-        if not ids:
-            return None
-
-        id_list = ",".join(f'"{pid}"' for pid in ids[:40])
-        query = f"""
-        {{
-          products(
-            filter: {{
-              static: {{
-                province_id: 24,
-                product_id: [{id_list}],
-                is_out_of_business: false,
-                price: {{from: 1}}
-              }}
-            }}
-            page: 1
-            size: 50
-          ) {{
-            data {{
-              general {{
-                product_id
-                parent_id
-                child_product
-                name
-                url_path
-                sku
-              }}
-              filterable {{
-                stock
-                price
-                special_price
-                views
-              }}
-            }}
-          }}
-        }}
-        """
-
-        raw_api = dtv_graphql(query)
-        data = (((raw_api.get("data") or {}).get("products") or {}).get("data") or [])
-        if not data:
-            return None
-
-        exact = None
-        for item in data:
-            general = item.get("general") or {}
-            if str(general.get("sku") or "").strip() == page_sku:
-                exact = item
-                break
-        if not exact:
-            return None
-
-        f = exact.get("filterable") or {}
-        special = int(f.get("special_price") or 0)
-        normal = int(f.get("price") or 0)
-        price = special if special > 0 else normal
-        if price <= 0:
-            return None
-
-        general = exact.get("general") or {}
-        return {
-            "price": price,
-            "product_id": general.get("product_id"),
-            "name": general.get("name"),
-            "url_path": general.get("url_path"),
-            "sku": general.get("sku"),
-            "page_url": r.url,
-        }
-    except Exception:
-        return None
-
-def product_slug(product_name: str):
-    text = normalize_text(product_name)
-    text = re.sub(r"\b(apple|samsung|xiaomi|oppo|vivo|realme|honor|huawei)\b", "", text)
-    text = re.sub(r"\b\d+(gb|tb)\b", "", text)
-    text = re.sub(r"\s+", "-", text).strip("-")
-    return text
-
-def fetch_battery_direct(product_name: str, cfg):
-    slug = product_slug(product_name)
-    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"}
-
-    # Thứ tự ưu tiên: Pisen dung lượng chuẩn -> GENA dung lượng chuẩn -> VMAS
-    brand_candidates = [
-        ("Pisen", [
-            f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-pisen",
-            f"{DTV_BASE}/thay-pin-{slug}-pisen",
-            f"{DTV_BASE}/thay-pin-pisen-{slug}",
-            f"{DTV_BASE}/thay-pin-{slug}",
-        ]),
-        ("GENA", [
-            f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-gena",
-            f"{DTV_BASE}/thay-pin-{slug}-gena",
-            f"{DTV_BASE}/thay-pin-gena-{slug}",
-            f"{DTV_BASE}/thay-pin-{slug}",
-        ]),
-        ("VMAS", [
-            f"{DTV_BASE}/thay-pin-{slug}-chinh-hang-vmas",
-            f"{DTV_BASE}/thay-pin-{slug}-vmas",
-            f"{DTV_BASE}/thay-pin-vmas-{slug}",
-            f"{DTV_BASE}/thay-pin-{slug}",
-        ]),
-    ]
-
-    def model_ok(text):
-        target = iphone_model_signature(product_name)
-        candidate = iphone_model_signature(text)
-        if target:
-            return candidate is not None and candidate == target
-        words = set(normalize_text(text).split())
-        return all(token in words for token in model_tokens(product_name))
-
-    def result(price, name, url, brand, api_item=None):
-        deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
-        return {
-            "key":"battery",
-            "label":cfg["label"],
-            "available":True,
-            "service_name":name,
-            "repair_price":price,
-            "support_rate":cfg["support_rate"],
-            "support_amount":support,
-            "max_support":cfg["max_support"],
-            "deduction":deduction,
-            "source_url":url,
-            "source_page":url,
-            "battery_brand":brand,
-            "dtv_product_id":(api_item or {}).get("product_id"),
-            "dtv_sku":(api_item or {}).get("sku"),
-        }
-
-    # Ưu tiên các trang dịch vụ riêng theo từng hãng pin.
-    for brand, urls in brand_candidates:
-        for direct_url in urls:
-            try:
-                r = requests.get(direct_url, headers=headers, timeout=12, allow_redirects=True)
-                if r.status_code != 200:
-                    continue
-
-                soup = BeautifulSoup(r.text, "html.parser")
-                page_text = " ".join(soup.stripped_strings)
-                title = soup.find("h1")
-                title_text = " ".join(title.stripped_strings) if title else ""
-                evidence = title_text + " " + page_text[:5000]
-                nt = normalize_text(evidence)
-
-                if not model_ok(title_text or evidence):
-                    continue
-                if brand.lower() not in nt:
-                    continue
-
-                # Pisen/GENA: loại pin siêu cao, ưu tiên dung lượng chuẩn.
-                if brand in ("Pisen", "GENA") and "sieu cao" in nt:
-                    continue
-
-                # Giá từ API của chính trang nếu có.
-                api_item = fetch_dtv_api_price_from_page(r.url)
-                if api_item and api_item.get("price"):
-                    api_evidence = (api_item.get("name") or "") + " " + (api_item.get("url_path") or "")
-                    api_nt = normalize_text(api_evidence)
-                    brand_ok = brand.lower() in api_nt
-                    if model_ok(api_evidence or title_text) and brand_ok:
-                        return result(
-                            api_item["price"],
-                            api_item.get("name") or title_text or f"Thay pin {product_name} {brand}",
-                            api_item.get("page_url") or r.url,
-                            brand,
-                            api_item
-                        )
-
-                # Nếu API không có giá: chỉ nhận giá số hiện trên trang.
-                # "Liên hệ" / hết hàng / sắp về không có giá số nên tự bỏ qua.
-                match = re.search(
-                    rf"{re.escape(brand)}[^0-9₫]{{0,160}}([0-9\.\,]+)\s*₫",
-                    page_text,
-                    re.IGNORECASE
-                )
-                if match:
-                    price = int(re.sub(r"[^0-9]", "", match.group(1)))
-                    if price >= 100000:
-                        return result(
-                            price,
-                            title_text or f"Thay pin {product_name} {brand}",
-                            r.url,
-                            brand
-                        )
-            except Exception:
-                continue
-
-    # Fallback: quét danh mục và vẫn giữ thứ tự Pisen -> GENA -> VMAS.
-    try:
-        r = requests.get(DTV_BASE + "/thay-pin", headers=headers, timeout=12, allow_redirects=True)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        grouped = {"Pisen": [], "GENA": [], "VMAS": []}
-
-        for a in soup.find_all("a"):
-            text = " ".join(a.stripped_strings)
-            if not text or not model_ok(text):
-                continue
-
-            nt = normalize_text(text)
-            prices = money_values(text)
-            if not prices:
-                continue
-
-            href = str(a.get("href") or "")
-            source_url = href if href.startswith("http") else DTV_BASE + href
-
-            if "pisen" in nt and "sieu cao" not in nt:
-                grouped["Pisen"].append((prices[0], text[:260], source_url))
-            elif ("gena" in nt or "gen a" in nt) and "sieu cao" not in nt:
-                grouped["GENA"].append((prices[0], text[:260], source_url))
-            elif "vmas" in nt:
-                grouped["VMAS"].append((prices[0], text[:260], source_url))
-
-        for brand in ("Pisen", "GENA", "VMAS"):
-            if not grouped[brand]:
-                continue
-
-            price, service_name, source_url = min(grouped[brand], key=lambda x: x[0])
-
-            api_item = fetch_dtv_api_price_from_page(source_url)
-            if api_item and api_item.get("price"):
-                api_evidence = (api_item.get("name") or "") + " " + (api_item.get("url_path") or "")
-                if model_ok(api_evidence or service_name):
-                    price = api_item["price"]
-                    service_name = api_item.get("name") or service_name
-                    source_url = api_item.get("page_url") or source_url
-
-            return result(price, service_name, source_url, brand, api_item)
-
-    except Exception:
-        pass
-
-    return None
-
-def fetch_camera_direct(product_name: str, cfg, key: str):
-    """
-    Camera lấy GIÁ LIVE từ trang Điện Thoại Vui tại thời điểm tra cứu.
-    Quy tắc an toàn:
-    - đúng model + biến thể
-    - đúng camera trước/sau
-    - chỉ GENA
-    - không fallback sang model khác
-    - không xác minh được giá live => không hiển thị
-    """
-    slug = product_slug(product_name)
-    direction_slug = "thay-camera-truoc" if key == "camera_front" else "thay-camera-sau"
-    required_phrase = "camera truoc" if key == "camera_front" else "camera sau"
-    page_url = f"{DTV_BASE}/{direction_slug}-{slug}"
-
-    # Bypass cache/CDN tối đa có thể và cố định nguồn Hà Nội.
-    live_url = page_url + ("&" if "?" in page_url else "?") + f"_live={int(time.time())}"
-    headers = {
-        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36",
-        "Accept-Language":"vi-VN,vi;q=0.9",
-        "Cache-Control":"no-cache, no-store, max-age=0",
-        "Pragma":"no-cache",
-    }
-    cookies = {
-        "province_id":"24",
-        "provinceId":"24",
-    }
-
-    try:
-        r = requests.get(
-            live_url,
-            headers=headers,
-            cookies=cookies,
-            timeout=15,
-            allow_redirects=True
-        )
-        if r.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(r.text, "html.parser")
-        page_text = " ".join(soup.stripped_strings)
-        h1 = soup.find("h1")
-        h1_text = " ".join(h1.stripped_strings) if h1 else ""
-
-        # Trang phải đúng chính xác model.
-        if not housing_model_matches(h1_text or page_text[:1200], product_name):
-            return None
-
-        candidates = []
-
-        # 1) Tìm card GENA đúng model ngay trên trang LIVE.
-        for a in soup.find_all("a"):
-            text = " ".join(a.stripped_strings)
-            if not text:
-                continue
-
-            # Trạng thái "Sắp về hàng" thường nằm ngoài thẻ <a>, trong card cha.
-            # Vì vậy phải đọc cả container của sản phẩm, không chỉ riêng text của link.
-            card_text = text
-            parent = a
-            for _ in range(5):
-                parent = getattr(parent, "parent", None)
-                if not parent:
-                    break
-                parent_text = " ".join(parent.stripped_strings)
-                if len(parent_text) > len(card_text):
-                    card_text = parent_text
-                # Dừng khi container đã đủ thông tin sản phẩm + giá.
-                if required_phrase in normalize_text(parent_text) and money_values(parent_text):
-                    break
-
-            nt = normalize_text(text)
-            card_nt = normalize_text(card_text)
-
-            if required_phrase not in nt:
-                continue
-            if not housing_model_matches(text, product_name):
-                continue
-            if "gena" not in nt and "gen a" not in nt:
-                continue
-            if "giu face id" in card_nt:
-                continue
-            if "sap ve hang" in card_nt:
-                continue
-
-            prices = money_values(card_text)
-            href = str(a.get("href") or "")
-            source_url = href if href.startswith("http") else (DTV_BASE + href if href else "")
-
-            if prices:
-                candidates.append({
-                    "service_name": text[:260],
-                    "price": prices[0],
-                    "source_url": source_url or r.url,
-                    "source":"live_category"
-                })
-                continue
-
-            # 2) Nếu card chưa có giá số, vào đúng trang chi tiết của card và đọc giá live.
-            if source_url:
-                try:
-                    detail_url = source_url + ("&" if "?" in source_url else "?") + f"_live={int(time.time())}"
-                    dr = requests.get(
-                        detail_url,
-                        headers=headers,
-                        cookies=cookies,
-                        timeout=15,
-                        allow_redirects=True
-                    )
-                    if dr.status_code != 200:
-                        continue
-
-                    dsoup = BeautifulSoup(dr.text, "html.parser")
-                    dtext = " ".join(dsoup.stripped_strings)
-                    dh1 = dsoup.find("h1")
-                    dh1_text = " ".join(dh1.stripped_strings) if dh1 else ""
-
-                    if not housing_model_matches(dh1_text or dtext[:1200], product_name):
-                        continue
-
-                    dnt = normalize_text(dh1_text + " " + dtext[:3500])
-                    if required_phrase not in dnt:
-                        continue
-                    if "gena" not in dnt and "gen a" not in dnt:
-                        continue
-                    if "sap ve hang" in dnt:
-                        continue
-
-                    # Ưu tiên giá nằm cạnh biến thể Camera GENA.
-                    m = re.search(
-                        r"Camera\s+GENA[^0-9]{0,100}([0-9\.\,]+)\s*(?:₫|đ)",
-                        dtext,
-                        re.IGNORECASE
-                    )
-                    if not m:
-                        # Fallback an toàn: giá tiền đầu tiên >=100k trên đúng trang chi tiết GENA.
-                        vals = money_values(dtext)
-                        price = vals[0] if vals else 0
-                    else:
-                        price = int(re.sub(r"[^0-9]", "", m.group(1)))
-
-                    if price >= 100000:
-                        candidates.append({
-                            "service_name": dh1_text or text[:260],
-                            "price": price,
-                            "source_url": dr.url,
-                            "source":"live_detail"
-                        })
-                except Exception:
-                    continue
-
-        if not candidates:
-            return None
-
-        # Chỉ dùng ứng viên đúng model/direction/GENA.
-        # Nếu có nhiều ứng viên, ưu tiên trang chi tiết live; sau đó giá thấp nhất.
-        detail_candidates = [x for x in candidates if x["source"] == "live_detail"]
-        pool = detail_candidates if detail_candidates else candidates
-        best = min(pool, key=lambda x: x["price"])
-
-        price = best["price"]
-        deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
-
-        return {
-            "key":key,
-            "label":cfg["label"],
-            "available":True,
-            "service_name":best["service_name"],
-            "repair_price":price,
-            "support_rate":cfg["support_rate"],
-            "support_amount":support,
-            "max_support":cfg["max_support"],
-            "deduction":deduction,
-            "source_url":best["source_url"],
-            "source_page":r.url,
-            "camera_verified":True,
-            "camera_source":best["source"]
-        }
-
-    except Exception:
-        return None
-
-def fetch_screen_direct(product_name: str, cfg):
-    slug = product_slug(product_name)
-    direct_url = f"{DTV_BASE}/thay-man-hinh-{slug}-chinh-hang-gena-loai-pro"
-
-    # Ưu tiên API nội bộ Điện Thoại Vui theo product_id của chính trang.
-    api_item = fetch_dtv_api_price_from_page(direct_url)
-    if api_item:
-        price = api_item["price"]
-        deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
-        return {
-            "key":"screen",
-            "label":cfg["label"],
-            "available":True,
-            "service_name":api_item.get("name") or f"Thay màn hình {product_name} GENA loại Pro",
-            "repair_price":price,
-            "support_rate":cfg["support_rate"],
-            "support_amount":support,
-            "max_support":cfg["max_support"],
-            "deduction":deduction,
-            "source_url":api_item.get("page_url") or direct_url,
-            "source_page":api_item.get("page_url") or direct_url,
-            "dtv_product_id":api_item.get("product_id"),
-            "dtv_sku":api_item.get("sku"),
-        }
-
-    r = requests.get(
-        direct_url,
-        headers={"User-Agent":"Mozilla/5.0","Accept-Language":"vi-VN,vi;q=0.9"},
-        timeout=12,
-        allow_redirects=True
-    )
-    if r.status_code != 200:
-        return None
-
-    soup = BeautifulSoup(r.text, "html.parser")
-    page_text = " ".join(soup.stripped_strings)
-    title = soup.find("h1")
-    title_text = " ".join(title.stripped_strings) if title else ""
-
-    nt = normalize_text(title_text + " " + page_text[:5000])
-    model = model_tokens(product_name)
-    if not all(token in nt.split() for token in model):
-        return None
-    if "gena" not in nt or "loai pro" not in nt:
-        return None
-
-    price = None
-
-    # 1) Giá hiển thị trực tiếp cạnh GENA loại Pro.
-    match = re.search(r"GENA\s+loại\s+pro[^0-9]{0,80}([0-9\.\,]+)\s*₫", page_text, re.IGNORECASE)
-    if match:
-        price = int(re.sub(r"[^0-9]", "", match.group(1)))
-
-    # 2) Một số trang render giá bằng JavaScript: tìm trường giá trong dữ liệu gần GENA loại Pro.
-    if not price:
-        raw_flat = re.sub(r"\s+", " ", r.text)
-        for m in re.finditer(r"GENA.{0,40}loại.{0,20}pro", raw_flat, re.IGNORECASE):
-            window = raw_flat[max(0, m.start() - 2000):m.start() + 2000]
-            pm = re.search(r'(?:"(?:final_price|special_price|price|finalPrice|salePrice)"|(?:final_price|special_price|price|finalPrice|salePrice))\s*[:=]\s*["\']?([0-9]{6,9})', window, re.IGNORECASE)
-            if pm:
-                candidate = int(pm.group(1))
-                if 300000 <= candidate <= 30000000:
-                    price = candidate
-                    break
-
-    # 3) Tìm theo mã SKU của chính trang sản phẩm.
-    if not price:
-        sku_match = re.search(r"\b\d+\.\d+\.\d+\.\d+\.\d+\b", page_text)
-        if sku_match:
-            raw_flat = re.sub(r"\s+", " ", r.text)
-            sku_pos = raw_flat.find(sku_match.group(0))
-            if sku_pos >= 0:
-                window = raw_flat[max(0, sku_pos - 2500):sku_pos + 2500]
-                pm = re.search(r'(?:"(?:final_price|special_price|price|finalPrice|salePrice)"|(?:final_price|special_price|price|finalPrice|salePrice))\s*[:=]\s*["\']?([0-9]{6,9})', window, re.IGNORECASE)
-                if pm:
-                    candidate = int(pm.group(1))
-                    if 300000 <= candidate <= 30000000:
-                        price = candidate
-
-    # 4) Fallback: lấy giá trong bảng giá bài viết đúng model + GENA loại Pro.
-    if not price:
-        model_text = " ".join(model)
-        pattern = r"Thay màn hình[^₫]{0,180}" + re.escape(model_text).replace(r"\ ", r"\s+") + r"[^₫]{0,180}GENA\s+loại\s+Pro[^0-9]{0,80}([0-9\.\,]+)\s*đ"
-        tm = re.search(pattern, page_text, re.IGNORECASE)
-        if tm:
-            price = int(re.sub(r"[^0-9]", "", tm.group(1)))
-
-    if not price or price < 100000:
-        return None
-
-    deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
-    return {
-        "key":"screen",
-        "label":cfg["label"],
-        "available":True,
-        "service_name":title_text or f"Thay màn hình {product_name} GENA loại Pro",
-        "repair_price":price,
-        "support_rate":cfg["support_rate"],
-        "support_amount":support,
-        "max_support":cfg["max_support"],
-        "deduction":deduction,
-        "source_url":r.url,
-        "source_page":r.url
-    }
-
 # ---------------------------------------------------------------------------
-# DTV hybrid catalog: tải bảng giá theo danh mục vào RAM và refresh định kỳ.
-# Giữ nguyên toàn bộ rule nghiệp vụ hiện tại (Face ID, mức hỗ trợ, giá thủ công).
+#  Gia sua chua Dien Thoai Vui: lay tu catalog API (dtv_catalog.py), tu cap nhat nen
 # ---------------------------------------------------------------------------
 def _price_key(item):
-    return (item["price"], item.get("product_id") or 0)
+    return (item["price"], item["product_id"] or 0)
 
 
-_FEATURES = {}
+# Moi lan tai gia: tinh san ten khong dau + doi may cho tung dich vu (khong lam lai moi lan tra)
+_FEATURES = {}          # key -> (version, [(item, ten_khong_dau, sig_iphone, sig_android, tu)])
 _FEATURES_LOCK = threading.Lock()
 
 
 def _features(key: str):
     items = catalog.items(key)
-    version = catalog.version(key)
+    ver = catalog.version(key)
     cached = _FEATURES.get(key)
-    if cached and cached[0] == version:
+    if cached and cached[0] == ver:
         return cached[1]
-
-    features = []
-    for item in items:
-        nt = normalize_text(item["name"])
-        features.append((
-            item,
-            nt,
-            iphone_model_signature(item["name"]),
-            common_android_signature(item["name"]),
-            set(nt.split()),
-        ))
-
+    feats = []
+    for it in items:
+        nt = normalize_text(it["name"])
+        feats.append((it, nt, iphone_model_signature(it["name"]),
+                      common_android_signature(it["name"]), set(nt.split())))
     with _FEATURES_LOCK:
-        _FEATURES[key] = (version, features)
-    return features
+        _FEATURES[key] = (ver, feats)
+    return feats
 
 
 def _model_rows(key: str, product_name: str):
-    target_iphone = iphone_model_signature(product_name)
-    target_android = None if target_iphone else common_android_signature(product_name)
-    tokens = None if (target_iphone or target_android) else model_tokens(product_name)
-
-    rows = []
-    for item, _nt, iphone_sig, android_sig, words in _features(key):
-        if target_iphone:
-            matched = iphone_sig == target_iphone
-        elif target_android:
-            matched = android_sig == target_android
+    """Cac dich vu dung doi may (cung logic voi housing_model_matches, nhung dung du lieu tinh san)."""
+    t_iphone = iphone_model_signature(product_name)
+    t_android = None if t_iphone else common_android_signature(product_name)
+    tokens = None if (t_iphone or t_android) else model_tokens(product_name)
+    out = []
+    for it, _nt, sig_i, sig_a, words in _features(key):
+        if t_iphone:
+            ok = sig_i == t_iphone
+        elif t_android:
+            ok = sig_a == t_android
         else:
-            matched = all(token in words for token in tokens)
+            ok = all(t in words for t in tokens)
+        if ok:
+            out.append(it)
+    return out
 
-        if matched:
-            rows.append(item)
-    return rows
+
+def _pick_service(key: str, product_name: str):
+    """Chon dung dich vu theo rule cua shop. Tra ve (item, ghi_chu)."""
+    rows = _model_rows(key, product_name)
+    if not rows:
+        return None, ""
+
+    def n(it):
+        return normalize_text(it["name"])
+
+    if key == "screen":
+        pool = [it for it in rows
+                if ("gena" in n(it) or "gen a" in n(it))
+                and re.search(r"\bloai pro\b", n(it)) and "loai ultra" not in n(it)]
+        return (min(pool, key=_price_key), "GENA") if pool else (None, "")
+
+    if key == "battery":
+        # Pisen dung luong chuan -> GENA dung luong chuan -> VMAS (bo loai sieu cao)
+        for brand, need_std in (("pisen", True), ("gena", True), ("vmas", False)):
+            pool = [it for it in rows
+                    if brand in n(it) and "sieu cao" not in n(it)
+                    and (not need_std or "dung luong chuan" in n(it))]
+            if pool:
+                return min(pool, key=_price_key), {"pisen": "Pisen", "gena": "GENA", "vmas": "VMAS"}[brand]
+        return None, ""
+
+    if key in ("camera_front", "camera_back"):
+        pool = [it for it in rows
+                if ("gena" in n(it) or "gen a" in n(it))
+                and "giu face id" not in n(it) and "kinh camera" not in n(it) and "rua" not in n(it)]
+        return (min(pool, key=_price_key), "GENA") if pool else (None, "")
+
+    # Danh muc DTV co lan dich vu khac (vd. "chan sac" co ca "cap sac khong day NFC",
+    # "ep kinh" co ca "kinh lien film") -> uu tien dung loai, roi moi lay re nhat.
+    prefer = SERVICE_PREFER.get(key)
+    if prefer:
+        include, exclude = prefer
+        pool = [it for it in rows
+                if any(p in n(it) for p in include) and not any(x in n(it) for x in exclude)]
+        if pool:
+            rows = pool
+    return min(rows, key=_price_key), ""
 
 
+# key -> (cum tu uu tien, cum tu loai tru)  [da bo dau, chu thuong]
 SERVICE_PREFER = {
     "glass": (["ep kinh"], []),
     "touch": (["kinh cam ung"], []),
@@ -893,137 +227,58 @@ SERVICE_PREFER = {
     "back_glass": (["kinh lung", "nap lung"], []),
     "housing": (["vo"], []),
     "vibration": (["rung"], []),
-    "microphone": (["micro", "mic"], []),
 }
 
 
-def _pick_catalog_service(key: str, product_name: str):
-    rows = _model_rows(key, product_name)
-    if not rows:
-        return None, ""
-
-    def normalized(item):
-        return normalize_text(item["name"])
-
-    if key == "screen":
-        pool = [
-            item for item in rows
-            if ("gena" in normalized(item) or "gen a" in normalized(item))
-            and re.search(r"\bloai pro\b", normalized(item))
-            and "loai ultra" not in normalized(item)
-        ]
-        return (min(pool, key=_price_key), "GENA") if pool else (None, "")
-
-    if key == "battery":
-        for brand, require_standard in (("pisen", True), ("gena", True), ("vmas", False)):
-            pool = [
-                item for item in rows
-                if brand in normalized(item)
-                and "sieu cao" not in normalized(item)
-                and (not require_standard or "dung luong chuan" in normalized(item))
-            ]
-            if pool:
-                label = {"pisen": "Pisen", "gena": "GENA", "vmas": "VMAS"}[brand]
-                return min(pool, key=_price_key), label
-        return None, ""
-
-    if key in ("camera_front", "camera_back"):
-        pool = [
-            item for item in rows
-            if ("gena" in normalized(item) or "gen a" in normalized(item))
-            and "giu face id" not in normalized(item)
-            and "kinh camera" not in normalized(item)
-            and "rua" not in normalized(item)
-        ]
-        return (min(pool, key=_price_key), "GENA") if pool else (None, "")
-
-    prefer = SERVICE_PREFER.get(key)
-    if prefer:
-        include, exclude = prefer
-        pool = [
-            item for item in rows
-            if any(token in normalized(item) for token in include)
-            and not any(token in normalized(item) for token in exclude)
-        ]
-        if pool:
-            rows = pool
-
-    return min(rows, key=_price_key), ""
-
-
-_RESULT_CACHE = {}
-
-
 def _fetch_repair_type_uncached(product_name: str, key: str):
-    cfg = next((item for item in REPAIR_TYPES if item["key"] == key), None)
+    cfg = next((x for x in REPAIR_TYPES if x["key"] == key), None)
     if not cfg:
         return None
 
-    if key == "face_id":
-        return {
-            "key": "face_id",
-            "label": "Face ID",
-            "available": True,
-            "special": "face_id",
-            "support_rate": 0.0,
-            "max_support": None,
-        }
-
     source_page = DTV_BASE + cfg["url"]
-    item, brand = _pick_catalog_service(key, product_name)
+    item, brand = _pick_service(key, product_name)
     if not item:
         return {
-            "key": key,
-            "label": cfg["label"],
-            "available": False,
-            "support_rate": cfg["support_rate"],
-            "max_support": cfg["max_support"],
+            "key": key, "label": cfg["label"], "available": False,
+            "support_rate": cfg["support_rate"], "max_support": cfg["max_support"],
             "source_page": source_page,
         }
 
-    price = int(item["price"])
+    price = item["price"]
     deduction, support = deduction_for(price, cfg["support_rate"], cfg["max_support"])
-    result = {
-        "key": key,
-        "label": cfg["label"],
-        "available": True,
-        "service_name": item["name"],
-        "repair_price": price,
-        "support_rate": cfg["support_rate"],
-        "support_amount": support,
-        "max_support": cfg["max_support"],
-        "deduction": deduction,
-        "source_url": (
-            DTV_BASE + "/" + item["url_path"].lstrip("/")
-            if item.get("url_path") else source_page
-        ),
+    out = {
+        "key": key, "label": cfg["label"], "available": True,
+        "service_name": item["name"], "repair_price": price,
+        "support_rate": cfg["support_rate"], "support_amount": support,
+        "max_support": cfg["max_support"], "deduction": deduction,
+        "source_url": DTV_BASE + "/" + item["url_path"].lstrip("/") if item["url_path"] else source_page,
         "source_page": source_page,
-        "dtv_product_id": item.get("product_id"),
-        "dtv_sku": item.get("sku"),
+        "dtv_product_id": item["product_id"],
+        "dtv_sku": item["sku"],
     }
     if key == "battery":
-        result["battery_brand"] = brand
-    return result
+        out["battery_brand"] = brand
+    return out
+
+
+_RESULT_CACHE = {}      # ten may -> (version, ket_qua) ; xoa khi gia DTV duoc tai lai
 
 
 def fetch_repair_type(product_name: str, key: str):
-    if key == "face_id":
-        return _fetch_repair_type_uncached(product_name, key)
-
-    version = catalog.version(key)
-    cache_key = (product_name.lower(), key)
-    hit = _RESULT_CACHE.get(cache_key)
-    if hit and hit[0] == version and version:
+    ver = catalog.version(key)
+    ck = (product_name.lower(), key)
+    hit = _RESULT_CACHE.get(ck)
+    if hit and hit[0] == ver and ver:
         return hit[1]
-
-    result = _fetch_repair_type_uncached(product_name, key)
-    if version:
+    res = _fetch_repair_type_uncached(product_name, key)
+    if ver:
         if len(_RESULT_CACHE) > 5000:
             _RESULT_CACHE.clear()
-        _RESULT_CACHE[cache_key] = (version, result)
-    return result
+        _RESULT_CACHE[ck] = (ver, res)
+    return res
 
 
+# Tai bang gia DTV ngay khi khoi dong va tu cap nhat dinh ky (DTV_REFRESH_MINUTES, mac dinh 30).
 if os.environ.get("DTV_DISABLE_BACKGROUND") != "1":
     catalog.start_background()
 
@@ -1066,8 +321,8 @@ def health():
 
 @app.get("/api/dtv-status")
 def dtv_status():
+    """Xem bang gia DTV da tai duoc bao nhieu dong, luc nao, co loi khong."""
     return jsonify(catalog.status())
-
 
 @app.get("/api/search")
 def search():
@@ -1132,7 +387,7 @@ def repair_prices():
     if len(product_name) > 120:
         return jsonify({"items": [], "error": "Tên sản phẩm quá dài."}), 400
 
-    # Sau cold start, chờ catalog tối đa 12 giây. Các lần sau chỉ đọc RAM.
+    # Lan dau sau khi khoi dong: cho bang gia DTV toi da ~12 giay (khong vuot timeout gunicorn)
     catalog.wait_ready(timeout=12)
 
     results = {}
@@ -1148,10 +403,11 @@ def repair_prices():
             }
 
     ordered = [results.get(cfg["key"]) for cfg in REPAIR_TYPES]
+    warming = not catalog.all_ready()
     return jsonify({
         "product_name":product_name,
         "region":"Hà Nội",
-        "warming": not catalog.all_ready(),
+        "warming": warming,
         "items":ordered,
         "source":"Điện Thoại Vui",
         "fetched_at": catalog.fetched_at() or int(time.time())
